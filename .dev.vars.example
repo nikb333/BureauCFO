@@ -1,0 +1,6 @@
+# Copy this to .dev.vars and fill in your secrets
+# DO NOT commit this file to Git
+
+# HubSpot Private App token (stored in KV in production)
+# Set via: wrangler kv:key put --binding CONFIG HUBSPOT_TOKEN "pat-na1-xxxxx"
+HUBSPOT_TOKEN=pat-na1-your-token-here
