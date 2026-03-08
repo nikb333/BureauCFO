@@ -1,6 +1,5 @@
-// bureau-cfo Worker — API + Frontend for CFO Dashboard
+// Bureau CFO Dashboard — Worker v2 with Live Calculation Engine
 // Bindings: DB (D1), CONFIG (KV)
-// Data sources: HubSpot CRM, Bureau Ops Worker, Syft (via D1 overrides)
 
 import FRONTEND_HTML from './frontend.html';
 
@@ -9,423 +8,361 @@ const CORS = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
-
 function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...CORS },
-  });
+  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...CORS } });
 }
 
-function err(msg, status = 500) {
-  return json({ error: msg }, status);
+// ════════════════════════════════════════════════════════════════
+// CALCULATION ENGINE
+// ════════════════════════════════════════════════════════════════
+async function loadAllInputs(DB) {
+  const [entities, banks, arRates, apRates, newOrders, amex, config,
+    arDeals, apVendors, stockPOs, tradeLoans, scheduled, syftRecon,
+    scenarios, overrides, settings] = await Promise.all([
+    DB.prepare('SELECT * FROM entities').all(),
+    DB.prepare('SELECT * FROM bank_accounts').all(),
+    DB.prepare('SELECT * FROM input_ar_collection ORDER BY entity_id, week_num').all(),
+    DB.prepare('SELECT * FROM input_ap_spread ORDER BY entity_id, week_num').all(),
+    DB.prepare('SELECT * FROM input_new_orders').all(),
+    DB.prepare('SELECT * FROM input_amex_payoff').all(),
+    DB.prepare('SELECT * FROM input_entity_config').all(),
+    DB.prepare('SELECT * FROM ar_overrides').all(),
+    DB.prepare('SELECT * FROM ap_overrides').all(),
+    DB.prepare('SELECT * FROM stock_po_overrides').all(),
+    DB.prepare('SELECT * FROM trade_loans').all(),
+    DB.prepare('SELECT * FROM scheduled_payments').all(),
+    DB.prepare('SELECT * FROM syft_reconciliation').all(),
+    DB.prepare('SELECT * FROM scenarios WHERE is_active = 1').all(),
+    DB.prepare('SELECT * FROM scenario_overrides').all(),
+    DB.prepare('SELECT * FROM settings').all(),
+  ]);
+  const byEntity = (rows, f='entity_id') => { const m={}; rows.forEach(r=>{const k=r[f]; if(!m[k])m[k]=[]; m[k].push(r)}); return m; };
+  return {
+    entities: entities.results, banks: byEntity(banks.results),
+    arRates: byEntity(arRates.results), apRates: byEntity(apRates.results),
+    newOrders: Object.fromEntries(newOrders.results.map(r=>[r.entity_id,r])),
+    amex: Object.fromEntries(amex.results.map(r=>[r.entity_id,r])),
+    config: Object.fromEntries(config.results.map(r=>[r.entity_id,r])),
+    arDeals: byEntity(arDeals.results), apVendors: byEntity(apVendors.results),
+    stockPOs: byEntity(stockPOs.results), tradeLoans: byEntity(tradeLoans.results),
+    scheduled: byEntity(scheduled.results),
+    syftRecon: Object.fromEntries(syftRecon.results.map(r=>[r.entity_id,r])),
+    scenarios: scenarios.results,
+    overrides: byEntity(overrides.results, 'scenario_id'),
+    settings: Object.fromEntries(settings.results.map(r=>[r.key,r.value])),
+  };
 }
 
-// ─── HubSpot API helper ────────────────────────────────────────────────────
-async function hubspotSearch(env, { objectType, filters, properties, limit = 100 }) {
-  const token = await env.CONFIG.get('HUBSPOT_TOKEN');
-  if (!token) return { results: [], total: 0 };
-
-  const body = { limit, properties };
-  if (filters) body.filterGroups = filters;
-  body.sorts = [{ propertyName: 'amount', direction: 'DESCENDING' }];
-
-  const res = await fetch(`https://api.hubapi.com/crm/v3/objects/${objectType}/search`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    console.error('HubSpot error:', res.status, await res.text());
-    return { results: [], total: 0 };
+function getWeekDates(startDate, n) {
+  const weeks=[], s=new Date(startDate);
+  for(let i=0;i<n;i++){
+    const ws=new Date(s.getTime()+i*7*864e5), we=new Date(ws.getTime()+6*864e5);
+    weeks.push({start:ws,end:we,label:`${ws.getDate()} ${ws.toLocaleDateString('en-GB',{month:'short'})}`});
   }
-  return res.json();
+  return weeks;
 }
 
-// Map deal currency to entity
-function currencyToEntity(cur) {
-  return { USD: 'US', CAD: 'CA', GBP: 'UK', AUD: 'AU' }[cur] || 'US';
+function dateInWeek(ds, ws, we) {
+  if(!ds) return false;
+  const d=new Date(ds+'T00:00:00Z');
+  return d>=ws && d<=we;
 }
 
-// ─── ROUTES ────────────────────────────────────────────────────────────────
+function calcEntityWaterfall(eId, inputs, scenOv={}) {
+  const N=11, startDate=inputs.settings.week_start_date||'2026-03-07';
+  const weeks=getWeekDates(startDate,N);
+  const cfg=inputs.config[eId]||{}, ent=inputs.entities.find(e=>e.id===eId)||{};
+  const fxRate=ent.fx_rate||1;
 
-async function handleRequest(request, env, ctx) {
-  const url = new URL(request.url);
-  const path = url.pathname;
-  const method = request.method;
+  // Opening balance
+  const eBanks=inputs.banks[eId]||[];
+  const openingCash=eBanks.filter(b=>b.account_type!=='credit').reduce((s,b)=>s+b.balance,0);
 
-  if (method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: CORS });
+  // AR/AP totals from Syft
+  const syft=inputs.syftRecon[eId]||{};
+  const arTotal=syft.ar_total||0;
+  const apTotal=syft.ap_total||(inputs.apVendors[eId]||[]).reduce((s,v)=>s+v.amount,0);
+  const arRates=(inputs.arRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
+  const apRates=(inputs.apRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
+
+  // New orders
+  const no=inputs.newOrders[eId]||{monthly_revenue_local:0,delay_weeks:4,ramp_weeks:2,cogs_rate:0.075,replacement_rate:0.2};
+  const weeklyRev=no.monthly_revenue_local*12/52;
+  const revReduction=parseFloat(scenOv.revenue_reduction||'0');
+  const revUplift=parseFloat(scenOv.revenue_uplift||'0');
+  const adjWeeklyRev=weeklyRev*(1-revReduction+revUplift);
+
+  // AR scenario
+  const arDelayPct=parseFloat(scenOv.ar_delay_pct||'0');
+  const arDelayWks=parseInt(scenOv.ar_delay_weeks||'0');
+
+  // Amex
+  const amx=inputs.amex[eId]||{balance:0,weeks_to_pay:3,start_week:1,payment_week:4};
+  const stockPOs=inputs.stockPOs[eId]||[];
+  const tradeLns=inputs.tradeLoans[eId]||[];
+  const schedPmts=inputs.scheduled[eId]||[];
+
+  const weekData=[];
+  let bal=openingCash;
+
+  for(let w=0;w<N;w++){
+    const wk=weeks[w], open=bal;
+
+    // INFLOWS
+    const arRate=arRates[w]?.rate||0;
+    let overdueAR=arTotal*arRate;
+    if(arDelayPct>0&&arDelayWks>0){ overdueAR-=overdueAR*arDelayPct; }
+    if(arDelayPct>0&&arDelayWks>0&&w>=arDelayWks){
+      const srcRate=arRates[w-arDelayWks]?.rate||0;
+      overdueAR+=arTotal*srcRate*arDelayPct;
+    }
+
+    let newOrdersCash=0;
+    if(w>=no.delay_weeks){
+      const active=w-no.delay_weeks;
+      const ramp=Math.min(1,(active+1)/Math.max(no.ramp_weeks,1));
+      newOrdersCash=adjWeeklyRev*ramp;
+    }
+    const totIn=overdueAR+newOrdersCash;
+
+    // OUTFLOWS
+    const vendorAP=apTotal*(apRates[w]?.rate||0);
+
+    const freq=cfg.payroll_frequency||'bimonthly';
+    let payroll=0;
+    if(freq==='bimonthly') payroll=(w%2===1)?(cfg.payroll_amount||0)+(cfg.payroll_tax||0):0;
+    else if(freq==='monthly') payroll=(w>0&&w%4===3)?(cfg.payroll_amount||0)+(cfg.payroll_tax||0):0;
+    else if(freq==='fortnightly') payroll=(w%2===1)?(cfg.payroll_amount||0):0;
+
+    const marketing=cfg.marketing_weekly_local||0;
+
+    let amexPayoff=0;
+    if(amx.balance>0&&amx.weeks_to_pay>0){
+      if(amx.payment_week>0&&w+1===amx.payment_week) amexPayoff=amx.balance;
+      else if(amx.payment_week===0&&w>=amx.start_week&&w<amx.start_week+amx.weeks_to_pay) amexPayoff=amx.balance/amx.weeks_to_pay;
+    }
+
+    let stockOut=0;
+    for(const po of stockPOs){
+      if(dateInWeek(po.deposit_due,wk.start,wk.end)) stockOut+=po.deposit_amount||0;
+      if(dateInWeek(po.release_due,wk.start,wk.end)) stockOut+=po.release_amount||0;
+    }
+
+    let tradeOut=0;
+    for(const l of tradeLns){ if(dateInWeek(l.maturity_date,wk.start,wk.end)) tradeOut+=l.settlement||0; }
+
+    let scheduledOut=0;
+    for(const sp of schedPmts){
+      if(sp.frequency==='monthly'){
+        const dom=sp.day_of_month||1;
+        for(let d=new Date(wk.start);d<=wk.end;d.setDate(d.getDate()+1)){
+          if(d.getDate()===dom){
+            const ss=sp.start_date?new Date(sp.start_date):new Date('2020-01-01');
+            const se=sp.end_date?new Date(sp.end_date):new Date('2030-12-31');
+            if(d>=ss&&d<=se) scheduledOut+=sp.amount_local||0;
+          }
+        }
+      } else if(sp.frequency==='one-off'){
+        if(dateInWeek(sp.start_date,wk.start,wk.end)) scheduledOut+=sp.amount_local||0;
+      }
+    }
+
+    const rent=cfg.rent_weekly||0, misc=cfg.misc_weekly||0;
+    const diCogs=newOrdersCash*(no.cogs_rate||0);
+    const invRepl=newOrdersCash*(no.replacement_rate||0);
+    const totOut=vendorAP+payroll+marketing+amexPayoff+stockOut+tradeOut+scheduledOut+rent+misc+diCogs+invRepl;
+    bal=open+totIn-totOut;
+
+    weekData.push({
+      week:wk.label, weekStart:wk.start.toISOString().slice(0,10), open:Math.round(open),
+      arIn:Math.round(overdueAR), newOrders:Math.round(newOrdersCash), totIn:Math.round(totIn),
+      vendorAP:Math.round(vendorAP), payroll:Math.round(payroll), marketing:Math.round(marketing),
+      amexPayoff:Math.round(amexPayoff), stock:Math.round(stockOut), trade:Math.round(tradeOut),
+      scheduled:Math.round(scheduledOut), rent:Math.round(rent), misc:Math.round(misc),
+      diCogs:Math.round(diCogs), invRepl:Math.round(invRepl), totOut:Math.round(totOut),
+      close:Math.round(bal), closeExStock:Math.round(bal+stockOut),
+    });
   }
+  return { entity:eId, currency:ent.currency||'USD', fxRate, openingCash, arTotal, apTotal, weeks:weekData };
+}
 
-  try {
-    // ── Frontend Dashboard ─────────────────────────────
-    if (path === '/' || path === '/index.html') {
-      return new Response(FRONTEND_HTML, {
-        headers: { 'Content-Type': 'text/html;charset=UTF-8', ...CORS },
-      });
-    }
-
-    // ── Health ──────────────────────────────────────────
-    if (path === '/api/health') {
-      return json({ status: 'ok', timestamp: new Date().toISOString() });
-    }
-
-    // ── Entities & Config ──────────────────────────────
-    if (path === '/api/entities' && method === 'GET') {
-      const entities = await env.DB.prepare(`
-        SELECT e.*,
-          json_group_array(json_object(
-            'id', ba.id, 'name', ba.account_name,
-            'balance', ba.balance, 'type', ba.account_type
-          )) as bank_accounts
-        FROM entities e
-        LEFT JOIN bank_accounts ba ON ba.entity_id = e.id
-        GROUP BY e.id
-      `).all();
-
-      const payroll = await env.DB.prepare('SELECT * FROM payroll').all();
-      const opex = await env.DB.prepare('SELECT * FROM opex').all();
-
-      const result = entities.results.map(e => ({
-        ...e,
-        bank_accounts: JSON.parse(e.bank_accounts),
-        payroll: payroll.results.find(p => p.entity_id === e.id),
-        opex: opex.results.find(o => o.entity_id === e.id),
-      }));
-
-      return json({ entities: result });
-    }
-
-    // ── Update Bank Account ────────────────────────────
-    if (path.startsWith('/api/banks/') && method === 'PUT') {
-      const accountId = path.split('/').pop();
-      const body = await request.json();
-      await env.DB.prepare(
-        `UPDATE bank_accounts SET balance = ?, updated_at = datetime('now') WHERE id = ?`
-      ).bind(body.balance, accountId).run();
-      return json({ success: true });
-    }
-
-    // ── Update FX Rate ─────────────────────────────────
-    if (path.startsWith('/api/fx/') && method === 'PUT') {
-      const entityId = path.split('/').pop();
-      const body = await request.json();
-      await env.DB.prepare(
-        `UPDATE entities SET fx_rate = ? WHERE id = ?`
-      ).bind(body.fx_rate, entityId).run();
-      return json({ success: true });
-    }
-
-    // ── Update Payroll ─────────────────────────────────
-    if (path.startsWith('/api/payroll/') && method === 'PUT') {
-      const entityId = path.split('/').pop();
-      const body = await request.json();
-      await env.DB.prepare(
-        `UPDATE payroll SET amount = ?, tax = ?, frequency = ?, updated_at = datetime('now') WHERE entity_id = ?`
-      ).bind(body.amount, body.tax, body.frequency, entityId).run();
-      return json({ success: true });
-    }
-
-    // ── Update Opex ────────────────────────────────────
-    if (path.startsWith('/api/opex/') && method === 'PUT') {
-      const entityId = path.split('/').pop();
-      const body = await request.json();
-      await env.DB.prepare(
-        `UPDATE opex SET marketing = ?, rent = ?, misc = ?, updated_at = datetime('now') WHERE entity_id = ?`
-      ).bind(body.marketing, body.rent, body.misc, entityId).run();
-      return json({ success: true });
-    }
-
-    // ── AR: Get deals (HubSpot + overrides) ────────────
-    if (path === '/api/ar' && method === 'GET') {
-      const entity = url.searchParams.get('entity');
-
-      // Get overrides from D1
-      let query = 'SELECT * FROM ar_overrides';
-      if (entity) query += ` WHERE entity_id = '${entity}'`;
-      query += ' ORDER BY outstanding DESC';
-      const overrides = await env.DB.prepare(query).all();
-
-      return json({ deals: overrides.results });
-    }
-
-    // ── AR: Override promised date ──────────────────────
-    if (path.match(/^\/api\/ar\/\d+\/override$/) && method === 'PUT') {
-      const id = path.split('/')[3];
-      const body = await request.json();
-      const fields = [];
-      const values = [];
-
-      if (body.promised_date !== undefined) { fields.push('promised_date = ?'); values.push(body.promised_date); }
-      if (body.collect_override_date !== undefined) { fields.push('collect_override_date = ?'); values.push(body.collect_override_date); }
-      if (body.notes !== undefined) { fields.push('notes = ?'); values.push(body.notes); }
-      if (body.status !== undefined) { fields.push('status = ?'); values.push(body.status); }
-
-      fields.push("updated_at = datetime('now')");
-      values.push(id);
-
-      await env.DB.prepare(
-        `UPDATE ar_overrides SET ${fields.join(', ')} WHERE id = ?`
-      ).bind(...values).run();
-
-      return json({ success: true });
-    }
-
-    // ── AP: Get ────────────────────────────────────────
-    if (path === '/api/ap' && method === 'GET') {
-      const entity = url.searchParams.get('entity');
-      let query = 'SELECT * FROM ap_overrides';
-      if (entity) query += ` WHERE entity_id = '${entity}'`;
-      query += ' ORDER BY amount DESC';
-      const result = await env.DB.prepare(query).all();
-      return json({ vendors: result.results });
-    }
-
-    // ── AP: Update due date ────────────────────────────
-    if (path.match(/^\/api\/ap\/\d+$/) && method === 'PUT') {
-      const id = path.split('/').pop();
-      const body = await request.json();
-      await env.DB.prepare(
-        `UPDATE ap_overrides SET due_date = ?, updated_at = datetime('now') WHERE id = ?`
-      ).bind(body.due_date, id).run();
-      return json({ success: true });
-    }
-
-    // ── Stock POs ──────────────────────────────────────
-    if (path === '/api/stock-pos' && method === 'GET') {
-      const entity = url.searchParams.get('entity');
-      let query = 'SELECT * FROM stock_po_overrides';
-      if (entity) query += ` WHERE entity_id = '${entity}'`;
-      const result = await env.DB.prepare(query).all();
-      return json({ orders: result.results });
-    }
-
-    // ── Stock PO: Update dates ─────────────────────────
-    if (path.match(/^\/api\/stock-pos\/\d+$/) && method === 'PUT') {
-      const id = path.split('/').pop();
-      const body = await request.json();
-      const fields = [];
-      const values = [];
-      if (body.deposit_due) { fields.push('deposit_due = ?'); values.push(body.deposit_due); }
-      if (body.release_due) { fields.push('release_due = ?'); values.push(body.release_due); }
-      fields.push("updated_at = datetime('now')");
-      values.push(id);
-      await env.DB.prepare(
-        `UPDATE stock_po_overrides SET ${fields.join(', ')} WHERE id = ?`
-      ).bind(...values).run();
-      return json({ success: true });
-    }
-
-    // ── Trade Loans ────────────────────────────────────
-    if (path === '/api/trade-loans' && method === 'GET') {
-      const result = await env.DB.prepare('SELECT * FROM trade_loans ORDER BY maturity_date').all();
-      return json({ loans: result.results });
-    }
-
-    if (path.match(/^\/api\/trade-loans\/\d+$/) && method === 'PUT') {
-      const id = path.split('/').pop();
-      const body = await request.json();
-      await env.DB.prepare(
-        `UPDATE trade_loans SET maturity_date = ?, updated_at = datetime('now') WHERE id = ?`
-      ).bind(body.maturity_date, id).run();
-      return json({ success: true });
-    }
-
-    // ── Waterfall Calculation ──────────────────────────
-    if (path === '/api/waterfall' && method === 'GET') {
-      const entityId = url.searchParams.get('entity');
-
-      // Read pre-calculated waterfall from cache (matches Excel V12 exactly)
-      const cache = await env.DB.prepare(
-        'SELECT * FROM waterfall_cache ORDER BY scope, week_num'
-      ).all();
-
-      const byScope = {};
-      for (const row of cache.results) {
-        if (!byScope[row.scope]) byScope[row.scope] = [];
-        byScope[row.scope].push({
-          week: row.week_label,
-          open: Math.round(row.opening),
-          close: Math.round(row.closing_with_stock),
-          arIn: Math.round(row.ar_in || 0),
-          totIn: Math.round(row.total_in || 0),
-          apOut: Math.round(row.vendor_ap || 0),
-          payroll: Math.round(row.payroll || 0),
-          amex: Math.round(row.amex || 0),
-          opex: Math.round(row.marketing || 0),
-          stock: Math.round(row.stock || 0),
-          trade: Math.round(row.trade || 0),
-          scheduled: Math.round(row.scheduled || 0),
-          totOut: Math.round(row.total_out || 0),
-        });
-      }
-
-      if (entityId) {
-        const weeks = byScope[entityId] || [];
-        return json({ entity: entityId, weeks });
-      }
-
-      // Consolidated chart data
-      const consolWeeks = (byScope['CONSOLIDATED'] || []).map(w => ({
-        week: w.week,
-        withStock: w.close,
-        exStock: Math.round((byScope['CONSOLIDATED'] || []).find(c => c.week === w.week)?.close || 0),
-      }));
-
-      // Rebuild from cache with both lines
-      const consolData = [];
-      const cRows = cache.results.filter(r => r.scope === 'CONSOLIDATED');
-      for (const r of cRows) {
-        consolData.push({
-          week: r.week_label,
-          withStock: Math.round(r.closing_with_stock),
-          exStock: Math.round(r.closing_ex_stock),
-        });
-      }
-
-      // Entity waterfalls
-      const entityData = {};
-      for (const eId of ['US', 'CA', 'UK', 'AU']) {
-        entityData[eId] = { weeks: byScope[eId] || [] };
-      }
-
-      return json({ entities: entityData, consolidated: consolData });
-    }
-
-    // ── Sync HubSpot → D1 ──────────────────────────────
-    if (path === '/api/sync/hubspot' && method === 'POST') {
-      const result = await syncHubSpot(env);
-      return json(result);
-    }
-
-    // ── Sync Bureau Ops → D1 ───────────────────────────
-    if (path === '/api/sync/bureau-ops' && method === 'POST') {
-      const result = await syncBureauOps(env);
-      return json(result);
-    }
-
-    // ── Settings ───────────────────────────────────────
-    if (path === '/api/settings' && method === 'GET') {
-      const result = await env.DB.prepare('SELECT * FROM settings').all();
-      const settings = {};
-      result.results.forEach(r => settings[r.key] = r.value);
-      return json({ settings });
-    }
-
-    if (path === '/api/settings' && method === 'PUT') {
-      const body = await request.json();
-      for (const [key, value] of Object.entries(body)) {
-        await env.DB.prepare(
-          `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`
-        ).bind(key, String(value)).run();
-      }
-      return json({ success: true });
-    }
-
-    return err('Not found: ' + path, 404);
-
-  } catch (e) {
-    console.error('Worker error:', e);
-    return err(e.message || 'Internal server error', 500);
+function calcConsolidated(results) {
+  const N=results[0]?.weeks?.length||11, out=[];
+  for(let w=0;w<N;w++){
+    let ws=0,es=0; const label=results[0]?.weeks[w]?.week||`Wk${w+1}`;
+    for(const r of results){ const wk=r.weeks[w]; if(!wk)continue; ws+=wk.close*r.fxRate; es+=wk.closeExStock*r.fxRate; }
+    out.push({week:label,withStock:Math.round(ws),exStock:Math.round(es)});
   }
+  return out;
 }
 
-// ─── HubSpot Sync ──────────────────────────────────────────────────────────
-async function syncHubSpot(env) {
-  const CLOSED_WON_STAGES = ['1068897145', '1012019111', '1093196916'];
-  const properties = [
-    'dealname', 'amount', 'deal_currency_code', 'closedate', 'dealstage',
-    'pipeline', 'expected_payment_date', 'payment_terms', 'invoice_number',
-    'hubspot_owner_id', 'is_paidtotal', 'amount_in_home_currency',
-  ];
-
-  const data = await hubspotSearch(env, {
-    objectType: 'deals',
-    filters: [{
-      filters: [
-        { propertyName: 'dealstage', operator: 'IN', values: CLOSED_WON_STAGES },
-        { propertyName: 'closedate', operator: 'GTE', value: '2025-06-01' },
-      ],
-    }],
-    properties,
-    limit: 100,
-  });
-
-  if (!data.results?.length) return { synced: 0, error: 'No deals found or token missing' };
-
-  // Clear existing AR overrides from HubSpot source
-  await env.DB.prepare("DELETE FROM ar_overrides WHERE hubspot_deal_id IS NOT NULL").run();
-
-  let synced = 0;
-  for (const deal of data.results) {
-    const p = deal.properties;
-    const cur = p.deal_currency_code || 'USD';
-    const entity = currencyToEntity(cur);
-    const amount = parseFloat(p.amount) || 0;
-    const paid = parseFloat(p.is_paidtotal) || 0;
-    const outstanding = amount - paid;
-    const closeDate = p.closedate ? p.closedate.slice(0, 10) : null;
-    const promisedDate = p.expected_payment_date || null;
-    const terms = p.payment_terms || 'Unknown';
-    const isOverdue = promisedDate && new Date(promisedDate) < new Date() ? 1 : 0;
-    const status = isOverdue ? 'overdue' : outstanding > 0 ? 'current' : 'paid';
-
-    await env.DB.prepare(`
-      INSERT INTO ar_overrides (hubspot_deal_id, entity_id, deal_name, owner, amount, paid, outstanding, currency, payment_terms, close_date, promised_date, status, overdue)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      String(deal.id), entity, p.dealname || '', p.hubspot_owner_id || '',
-      amount, paid, outstanding, cur, terms, closeDate, promisedDate, status, isOverdue
-    ).run();
-    synced++;
-  }
-
-  return { synced, total: data.total };
-}
-
-// ─── Bureau Ops Sync ───────────────────────────────────────────────────────
-async function syncBureauOps(env) {
-  try {
-    const opsUrl = env.BUREAU_OPS_WORKER_URL || 'https://bureau.withbureau.com';
-    const res = await fetch(`${opsUrl}/api/orders`);
-    if (!res.ok) return { synced: 0, error: 'Bureau Ops unreachable' };
-
-    const data = await res.json();
-    if (!data.orders?.length) return { synced: 0 };
-
-    await env.DB.prepare("DELETE FROM stock_po_overrides WHERE source = 'bureau_ops'").run();
-
-    let synced = 0;
-    for (const order of data.orders) {
-      const entity = { AU: 'AU', UK: 'UK', US: 'US', CA: 'CA' }[order.region] || 'US';
-      await env.DB.prepare(`
-        INSERT INTO stock_po_overrides (entity_id, po_ref, supplier, deposit_amount, deposit_due, release_amount, release_due, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'bureau_ops')
-      `).bind(
-        entity, order.id || order.ref, order.supplier || '',
-        order.depositAmt || 0, order.depositDue || '',
-        order.releaseAmt || 0, order.releaseDue || ''
-      ).run();
-      synced++;
-    }
-
-    return { synced };
-  } catch (e) {
-    return { synced: 0, error: e.message };
-  }
-}
-
-// ─── Scheduled handler (cron) ──────────────────────────────────────────────
-async function handleScheduled(event, env, ctx) {
-  ctx.waitUntil(Promise.all([
-    syncHubSpot(env),
-    syncBureauOps(env),
-  ]));
-}
-
+// ════════════════════════════════════════════════════════════════
+// ROUTES
+// ════════════════════════════════════════════════════════════════
 export default {
-  fetch: handleRequest,
-  scheduled: handleScheduled,
+  async fetch(request, env) {
+    const url=new URL(request.url), path=url.pathname, method=request.method;
+    if(method==='OPTIONS') return new Response(null,{status:204,headers:CORS});
+
+    try {
+      if(path==='/'||path==='/index.html') return new Response(FRONTEND_HTML,{headers:{'Content-Type':'text/html;charset=UTF-8',...CORS}});
+      if(path==='/api/health') return json({status:'ok',timestamp:new Date().toISOString()});
+
+      // Entities
+      if(path==='/api/entities'&&method==='GET'){
+        const ents=await env.DB.prepare(`SELECT e.*, json_group_array(json_object('id',ba.id,'name',ba.account_name,'balance',ba.balance,'type',ba.account_type)) as bank_accounts FROM entities e LEFT JOIN bank_accounts ba ON ba.entity_id=e.id GROUP BY e.id`).all();
+        const cfgs=await env.DB.prepare('SELECT * FROM input_entity_config').all();
+        const cfgMap=Object.fromEntries(cfgs.results.map(c=>[c.entity_id,c]));
+        return json({entities:ents.results.map(e=>({...e,bank_accounts:JSON.parse(e.bank_accounts),payroll:cfgMap[e.id]?{entity_id:e.id,amount:cfgMap[e.id].payroll_amount,tax:cfgMap[e.id].payroll_tax,frequency:cfgMap[e.id].payroll_frequency}:null,opex:cfgMap[e.id]?{entity_id:e.id,marketing:cfgMap[e.id].marketing_weekly_local,rent:cfgMap[e.id].rent_weekly,misc:cfgMap[e.id].misc_weekly}:null}))});
+      }
+
+      // Bank update
+      if(path.startsWith('/api/banks/')&&method==='PUT'){
+        const id=path.split('/').pop(), body=await request.json();
+        await env.DB.prepare('UPDATE bank_accounts SET balance=? WHERE id=?').bind(body.balance,id).run();
+        return json({success:true});
+      }
+
+      // AR
+      if(path==='/api/ar'&&method==='GET'){
+        const e=url.searchParams.get('entity');
+        let q='SELECT * FROM ar_overrides'; if(e) q+=` WHERE entity_id='${e}'`; q+=' ORDER BY outstanding DESC';
+        return json({deals:(await env.DB.prepare(q).all()).results});
+      }
+
+      // AP
+      if(path==='/api/ap'&&method==='GET'){
+        const e=url.searchParams.get('entity');
+        let q='SELECT * FROM ap_overrides'; if(e) q+=` WHERE entity_id='${e}'`; q+=' ORDER BY amount DESC';
+        return json({vendors:(await env.DB.prepare(q).all()).results});
+      }
+
+      // Stock POs
+      if(path==='/api/stock-pos'&&method==='GET'){
+        const e=url.searchParams.get('entity');
+        let q='SELECT * FROM stock_po_overrides'; if(e) q+=` WHERE entity_id='${e}'`;
+        return json({orders:(await env.DB.prepare(q).all()).results});
+      }
+
+      // Trade Loans
+      if(path==='/api/trade-loans'&&method==='GET') return json({loans:(await env.DB.prepare('SELECT * FROM trade_loans ORDER BY maturity_date').all()).results});
+
+      // All Inputs
+      if(path==='/api/inputs'&&method==='GET'){
+        const [a,b,c,d,e,f,g]=await Promise.all([
+          env.DB.prepare('SELECT * FROM input_ar_collection ORDER BY entity_id,week_num').all(),
+          env.DB.prepare('SELECT * FROM input_ap_spread ORDER BY entity_id,week_num').all(),
+          env.DB.prepare('SELECT * FROM input_new_orders').all(),
+          env.DB.prepare('SELECT * FROM input_amex_payoff').all(),
+          env.DB.prepare('SELECT * FROM input_entity_config').all(),
+          env.DB.prepare('SELECT * FROM scheduled_payments ORDER BY entity_id').all(),
+          env.DB.prepare('SELECT * FROM trade_loans ORDER BY maturity_date').all(),
+        ]);
+        return json({ar_collection:a.results,ap_spread:b.results,new_orders:c.results,amex_payoff:d.results,entity_config:e.results,scheduled_payments:f.results,trade_loans:g.results});
+      }
+
+      // Update inputs
+      if(path==='/api/inputs/ar-collection'&&method==='PUT'){
+        const body=await request.json();
+        for(const r of body.rates) await env.DB.prepare('INSERT OR REPLACE INTO input_ar_collection(entity_id,week_num,rate) VALUES(?,?,?)').bind(r.entity_id,r.week_num,r.rate).run();
+        return json({success:true});
+      }
+      if(path==='/api/inputs/ap-spread'&&method==='PUT'){
+        const body=await request.json();
+        for(const r of body.rates) await env.DB.prepare('INSERT OR REPLACE INTO input_ap_spread(entity_id,week_num,rate) VALUES(?,?,?)').bind(r.entity_id,r.week_num,r.rate).run();
+        return json({success:true});
+      }
+      if(path==='/api/inputs/new-orders'&&method==='PUT'){
+        const body=await request.json();
+        for(const r of body.entities) await env.DB.prepare('INSERT OR REPLACE INTO input_new_orders VALUES(?,?,?,?,?,?)').bind(r.entity_id,r.monthly_revenue_local,r.delay_weeks,r.ramp_weeks,r.cogs_rate,r.replacement_rate).run();
+        return json({success:true});
+      }
+      if(path==='/api/inputs/entity-config'&&method==='PUT'){
+        const body=await request.json();
+        for(const r of body.entities) await env.DB.prepare('INSERT OR REPLACE INTO input_entity_config VALUES(?,?,?,?,?,?,?,?)').bind(r.entity_id,r.rent_weekly,r.misc_weekly,r.di_cogs_rate,r.marketing_weekly_local,r.payroll_amount,r.payroll_tax,r.payroll_frequency).run();
+        return json({success:true});
+      }
+      if(path==='/api/inputs/amex-payoff'&&method==='PUT'){
+        const body=await request.json();
+        for(const r of body.entities) await env.DB.prepare('INSERT OR REPLACE INTO input_amex_payoff VALUES(?,?,?,?,?)').bind(r.entity_id,r.balance,r.weeks_to_pay,r.start_week,r.payment_week).run();
+        return json({success:true});
+      }
+      if(path==='/api/inputs/scheduled-payments'&&method==='PUT'){
+        const body=await request.json();
+        if(body.replace_all) await env.DB.prepare('DELETE FROM scheduled_payments').run();
+        for(const sp of body.payments){
+          if(sp.id) await env.DB.prepare('UPDATE scheduled_payments SET description=?,entity_id=?,amount_local=?,frequency=?,day_of_month=?,start_date=?,end_date=? WHERE id=?').bind(sp.description,sp.entity_id,sp.amount_local,sp.frequency,sp.day_of_month,sp.start_date,sp.end_date,sp.id).run();
+          else await env.DB.prepare('INSERT INTO scheduled_payments(entity_id,description,amount_local,currency,frequency,day_of_month,start_date,end_date) VALUES(?,?,?,?,?,?,?,?)').bind(sp.entity_id,sp.description,sp.amount_local,sp.currency||'USD',sp.frequency,sp.day_of_month,sp.start_date,sp.end_date).run();
+        }
+        return json({success:true});
+      }
+      if(path==='/api/inputs/trade-loans'&&method==='PUT'){
+        const body=await request.json();
+        if(body.replace_all) await env.DB.prepare('DELETE FROM trade_loans').run();
+        for(const tl of body.loans){
+          if(tl.id) await env.DB.prepare('UPDATE trade_loans SET reference=?,po_ref=?,outstanding=?,settlement=?,maturity_date=?,rate=? WHERE id=?').bind(tl.reference,tl.po_ref,tl.outstanding,tl.settlement,tl.maturity_date,tl.rate,tl.id).run();
+          else await env.DB.prepare('INSERT INTO trade_loans(entity_id,reference,po_ref,outstanding,settlement,maturity_date,rate) VALUES(?,?,?,?,?,?,?)').bind(tl.entity_id,tl.reference,tl.po_ref,tl.outstanding,tl.settlement,tl.maturity_date,tl.rate).run();
+        }
+        return json({success:true});
+      }
+
+      // Scenarios
+      if(path==='/api/scenarios'&&method==='GET'){
+        const sc=await env.DB.prepare('SELECT * FROM scenarios').all();
+        const ov=await env.DB.prepare('SELECT * FROM scenario_overrides').all();
+        const ovMap={}; ov.results.forEach(o=>{if(!ovMap[o.scenario_id])ovMap[o.scenario_id]={};ovMap[o.scenario_id][o.parameter]=o.value});
+        return json({scenarios:sc.results.map(s=>({...s,overrides:ovMap[s.id]||{}}))});
+      }
+      if(path==='/api/scenarios'&&method==='POST'){
+        const body=await request.json();
+        const r=await env.DB.prepare('INSERT INTO scenarios(name,description,is_active,color) VALUES(?,?,?,?)').bind(body.name,body.description||'',body.is_active?1:0,body.color||'#3171F1').run();
+        if(body.overrides) for(const [p,v] of Object.entries(body.overrides)) await env.DB.prepare('INSERT INTO scenario_overrides(scenario_id,parameter,value) VALUES(?,?,?)').bind(r.meta.last_row_id,p,String(v)).run();
+        return json({success:true,id:r.meta.last_row_id});
+      }
+      if(path.startsWith('/api/scenarios/')&&method==='PUT'){
+        const id=parseInt(path.split('/').pop()), body=await request.json();
+        if(body.name!==undefined) await env.DB.prepare('UPDATE scenarios SET name=?,description=?,is_active=?,color=? WHERE id=?').bind(body.name,body.description||'',body.is_active?1:0,body.color||'#3171F1',id).run();
+        if(body.overrides){await env.DB.prepare('DELETE FROM scenario_overrides WHERE scenario_id=?').bind(id).run();for(const [p,v] of Object.entries(body.overrides)) await env.DB.prepare('INSERT INTO scenario_overrides(scenario_id,parameter,value) VALUES(?,?,?)').bind(id,p,String(v)).run();}
+        return json({success:true});
+      }
+
+      // ═══ LIVE WATERFALL CALCULATION ═══
+      if(path==='/api/waterfall'&&method==='GET'){
+        const ef=url.searchParams.get('entity');
+        const sIds=(url.searchParams.get('scenarios')||'1').split(',').map(Number);
+        const inputs=await loadAllInputs(env.DB);
+        const EIDs=ef?[ef]:['US','CA','UK','AU'];
+        const scenResults={};
+        for(const sId of sIds){
+          const sc=inputs.scenarios.find(s=>s.id===sId)||{id:sId,name:'Base',color:'#213640'};
+          const ovs={}; (inputs.overrides[sId]||[]).forEach(o=>{ovs[o.parameter]=o.value});
+          const entWF={}, entRes=[];
+          for(const eId of EIDs){ const r=calcEntityWaterfall(eId,inputs,ovs); entWF[eId]=r; entRes.push(r); }
+          scenResults[sId]={id:sId,name:sc.name,color:sc.color,entities:entWF,consolidated:calcConsolidated(entRes)};
+        }
+        const primary=scenResults[sIds[0]];
+        return json({scenarios:scenResults,entities:primary?.entities||{},consolidated:primary?.consolidated||[]});
+      }
+
+      // Settings
+      if(path==='/api/settings'&&method==='GET'){
+        const r=await env.DB.prepare('SELECT * FROM settings').all();
+        const s={}; r.results.forEach(r=>s[r.key]=r.value);
+        return json({settings:s});
+      }
+      if(path==='/api/settings'&&method==='PUT'){
+        const body=await request.json();
+        for(const [k,v] of Object.entries(body)) await env.DB.prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').bind(k,String(v)).run();
+        return json({success:true});
+      }
+      if(path.startsWith('/api/fx/')&&method==='PUT'){
+        const eId=path.split('/').pop(), body=await request.json();
+        await env.DB.prepare('UPDATE entities SET fx_rate=? WHERE id=?').bind(body.fx_rate,eId).run();
+        return json({success:true});
+      }
+
+      return json({error:`Not found: ${path}`},404);
+    } catch(e){ console.error('Worker error:',e); return json({error:e.message},500); }
+  },
+  async scheduled(event,env){ console.log('Cron:',event.cron); },
 };
