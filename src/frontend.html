@@ -6,184 +6,497 @@
 <title>Bureau — CFO Dashboard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-*{margin:0;padding:0;box-sizing:border-box}body{font-family:'DM Sans',Helvetica,Arial,sans-serif;background:#fff;color:#213640}
-::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:#C4C3C1;border-radius:3px}
-.pill{padding:6px 14px;border-radius:20px;border:1.5px solid #E0DFDB;cursor:pointer;font-family:inherit;font-size:12px;font-weight:500;background:#fff;color:#847D70;transition:all 0.15s}
-.pill.active{border-color:var(--c);background:color-mix(in srgb,var(--c) 10%,white);color:var(--c);font-weight:600}
-.card{background:#fff;border:1px solid #E0DFDB;border-radius:8px;overflow:hidden}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'DM Sans',Helvetica,Arial,sans-serif;background:#FAFAF8;color:#213640;font-size:13px}
+::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:#C4C3C1;border-radius:3px}
+.pill{padding:5px 12px;border-radius:16px;border:1.5px solid #E0DFDB;cursor:pointer;font-family:inherit;font-size:11px;font-weight:500;background:#fff;color:#847D70;transition:all 0.15s}
+.pill:hover{border-color:#847D70}.pill.active{border-color:var(--c,#213640);background:color-mix(in srgb,var(--c,#213640) 8%,white);color:var(--c,#213640);font-weight:600}
+.card{background:#fff;border:1px solid #E8E7E3;border-radius:8px;overflow:hidden}
+.card-hdr{padding:10px 16px;border-bottom:1px solid #E8E7E3;font-weight:600;font-size:12px;display:flex;justify-content:space-between;align-items:center}
 table{width:100%;border-collapse:collapse;font-size:11px}
-th{text-align:left;padding:8px 12px;font-size:9px;color:#847D70;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;border-bottom:1px solid #E0DFDB}
-td{padding:7px 12px;border-bottom:1px solid #EDECE8}tr:nth-child(even){background:#F7F8F7}
-.badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600;text-transform:capitalize}
-.badge.overdue,.badge.true{background:#FCEDED;color:#C0392B}.badge.current{background:#FDF6E3;color:#B8860B}
-.badge.upcoming,.badge.false,.badge.paid{background:#E6F3ED;color:#2D7F5E}
-.section-hdr{padding:10px 16px;border-bottom:1px solid #E0DFDB;font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:center}
-.entity-card{padding:16px;cursor:pointer;transition:box-shadow 0.15s;border-top:4px solid var(--c)}
-.entity-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.06)}
-.loading{display:flex;align-items:center;justify-content:center;height:300px;color:#847D70;font-size:14px}
+th{text-align:left;padding:6px 10px;font-size:9px;color:#847D70;font-weight:600;letter-spacing:0.4px;text-transform:uppercase;border-bottom:1px solid #E8E7E3;position:sticky;top:0;background:#fff;z-index:1}
+td{padding:5px 10px;border-bottom:1px solid #F0EFEB}tr:hover{background:#FAFAF8}
+.badge{display:inline-block;padding:1px 7px;border-radius:3px;font-size:9px;font-weight:600}
+.badge.overdue,.badge.true{background:#FDE8E8;color:#C0392B}.badge.current{background:#FEF3D6;color:#B8860B}
+.badge.paid,.badge.false{background:#E2F5EC;color:#2D7F5E}
+input[type=number],input[type=text],select{padding:4px 8px;border:1px solid #E0DFDB;border-radius:4px;font-size:11px;font-family:inherit;background:#FAFAF8;color:#213640;width:100%}
+input[type=number]:focus,input[type=text]:focus,select:focus{outline:none;border-color:#3171F1;background:#fff}
+.btn{padding:6px 14px;border-radius:6px;border:none;cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;transition:all 0.15s}
+.btn-primary{background:#213640;color:#fff}.btn-primary:hover{background:#2d4a56}
+.btn-sm{padding:4px 10px;font-size:10px;border-radius:4px}
+.btn-outline{background:transparent;border:1.5px solid #E0DFDB;color:#847D70}.btn-outline:hover{border-color:#847D70}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.loading{display:flex;align-items:center;justify-content:center;height:300px;color:#847D70;font-size:13px}
+.tab-content{padding:20px 24px;max-width:1400px;margin:0 auto}
+.kpi{padding:14px 16px;border-left:4px solid var(--c,#213640)}
+.kpi-label{font-size:10px;color:#847D70;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.3px}
+.kpi-val{font-size:22px;font-weight:700;letter-spacing:-0.5px}.kpi-sub{font-size:10px;color:#C4C3C1;margin-top:2px}
+.entity-card{padding:14px;cursor:pointer;transition:all 0.15s;border-top:3px solid var(--c)}
+.entity-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.05);transform:translateY(-1px)}
+.section{margin-bottom:16px}
+.input-grid{display:grid;grid-template-columns:80px repeat(11,1fr);gap:1px;background:#E8E7E3;border:1px solid #E8E7E3;border-radius:6px;overflow:hidden}
+.input-grid>div{background:#fff;padding:4px 6px;font-size:10px;display:flex;align-items:center}
+.input-grid>div.hdr{background:#F5F4F0;font-weight:600;color:#847D70;font-size:9px}
+.input-grid input{border:none;background:transparent;text-align:center;padding:2px;font-size:10px;width:100%}
+.input-grid input:focus{background:#EDF2FE;border-radius:2px}
+.scenario-line{display:flex;align-items:center;gap:6px;padding:4px 0}
+.scenario-dot{width:10px;height:10px;border-radius:50%}
 </style>
 </head>
 <body>
 <div id="root"><div class="loading">Loading Bureau CFO Dashboard...</div></div>
 <script type="text/javascript">
-const {useState,useEffect,useMemo}=React;
-const C={yellow:"#FFFD6D",steel:"#213640",midGrey:"#847D70",warmGrey:"#C4C3C1",blue:"#3171F1",orange:"#FF603B",offWhite:"#F7F4E7",success:"#2D7F5E",danger:"#C0392B",warn:"#B8860B",entity:{US:"#3171F1",CA:"#B8860B",UK:"#7B6BB5",AU:"#2D7F5E"},entityBg:{US:"#EDF2FE",CA:"#FDF6E3",UK:"#F0EDF8",AU:"#E6F3ED"}};
-const fmt=n=>{if(n==null)return"\u2014";const a=Math.abs(n);if(a>=1e6)return(n<0?"-":"")+"$"+(a/1e6).toFixed(2)+"M";if(a>=1e3)return(n<0?"-":"")+"$"+(a/1e3).toFixed(0)+"K";return(n<0?"-$":"$")+a.toFixed(0)};
-const fmtF=n=>{if(n==null)return"\u2014";return(n<0?"-$":"$")+Math.abs(n).toLocaleString("en-US",{maximumFractionDigits:0})};
-const dateFmt=d=>d?new Date(d+"T00:00:00").toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}):"\u2014";
+const h=React.createElement,{useState:us,useEffect:ue,useMemo:um,useCallback:uc}=React;
+const C={steel:"#213640",mid:"#847D70",warm:"#C4C3C1",blue:"#3171F1",orange:"#FF603B",offWhite:"#F7F4E7",
+  ok:"#2D7F5E",bad:"#C0392B",warn:"#B8860B",yellow:"#FFFD6D",
+  ent:{US:"#3171F1",CA:"#B8860B",UK:"#7B6BB5",AU:"#2D7F5E"},
+  entBg:{US:"#EDF2FE",CA:"#FEF3D6",UK:"#F0EDF8",AU:"#E2F5EC"}};
+const fmt=n=>{if(n==null||isNaN(n))return"\u2014";const a=Math.abs(n);if(a>=1e6)return(n<0?"-":"")+"$"+(a/1e6).toFixed(2)+"M";if(a>=1e3)return(n<0?"-":"")+"$"+(a/1e3).toFixed(0)+"K";return(n<0?"-$":"$")+a.toFixed(0)};
+const fmtF=n=>{if(n==null||isNaN(n))return"\u2014";return(n<0?"-$":"$")+Math.abs(n).toLocaleString("en-US",{maximumFractionDigits:0})};
+const pct=n=>n!=null?(n*100).toFixed(0)+"%":"\u2014";
+const dateFmt=d=>d?new Date(d+"T00:00:00").toLocaleDateString("en-GB",{day:"2-digit",month:"short"}):"—";
 
-function Chart({data,lines,width:W,height:H}){
-  W=W||800;H=H||200;if(!data||!data.length)return null;
-  const p={t:20,r:20,b:30,l:55},w=W-p.l-p.r,h=H-p.t-p.b;
-  const all=data.flatMap(d=>lines.map(l=>d[l.key]||0));
-  const mn=Math.min(...all)*0.9,mx=Math.max(...all)*1.05,rng=mx-mn||1;
+// SVG Chart with multiple scenario lines
+function Chart({data,scenarioData,height:H}){
+  H=H||220;const W=900;if(!data||!data.length)return null;
+  const p={t:20,r:20,b:30,l:60},w=W-p.l-p.r,hh=H-p.t-p.b;
+  // Collect all values from all scenarios
+  let allV=data.map(d=>d.withStock).concat(data.map(d=>d.exStock));
+  if(scenarioData)Object.values(scenarioData).forEach(sd=>{if(sd.consolidated)sd.consolidated.forEach(d=>{allV.push(d.withStock);allV.push(d.exStock)})});
+  const mn=Math.min(...allV)*1.1,mx=Math.max(...allV)*1.05,rng=mx-mn||1;
   const xp=i=>p.l+(i/(data.length-1))*w;
-  const yp=v=>p.t+h-((v-mn)/rng)*h;
+  const yp=v=>p.t+hh-((v-mn)/rng)*hh;
   const tks=[mn,mn+rng*.25,mn+rng*.5,mn+rng*.75,mx];
-  return React.createElement("svg",{width:"100%",viewBox:"0 0 "+W+" "+H,style:{display:"block"}},
-    tks.map((t,i)=>React.createElement("g",{key:"t"+i},
-      React.createElement("line",{x1:p.l,x2:W-p.r,y1:yp(t),y2:yp(t),stroke:"#EDECE8",strokeWidth:1}),
-      React.createElement("text",{x:p.l-8,y:yp(t)+4,textAnchor:"end",fill:"#847D70",fontSize:10,fontFamily:"DM Sans"},fmt(t))
-    )),
-    React.createElement("line",{x1:p.l,x2:W-p.r,y1:yp(200000),y2:yp(200000),stroke:C.danger,strokeWidth:1,strokeDasharray:"4 4",opacity:0.5}),
-    data.map((d,i)=>React.createElement("text",{key:"l"+i,x:xp(i),y:H-6,textAnchor:"middle",fill:"#847D70",fontSize:10,fontFamily:"DM Sans"},d.week)),
-    lines.map(l=>React.createElement("g",{key:l.key},
-      React.createElement("polyline",{points:data.map((d,i)=>xp(i)+","+yp(d[l.key]||0)).join(" "),fill:"none",stroke:l.color,strokeWidth:l.width||2.5,strokeDasharray:l.dash||""}),
-      data.map((d,i)=>React.createElement("circle",{key:i,cx:xp(i),cy:yp(d[l.key]||0),r:3,fill:l.color}))
-    ))
-  );
+  const els=[];
+  // Grid
+  tks.forEach((t,i)=>{els.push(h("line",{key:"g"+i,x1:p.l,x2:W-p.r,y1:yp(t),y2:yp(t),stroke:"#EDECE8",strokeWidth:1}));els.push(h("text",{key:"gt"+i,x:p.l-8,y:yp(t)+4,textAnchor:"end",fill:"#847D70",fontSize:9,fontFamily:"DM Sans"},fmt(t)))});
+  // Zero line
+  if(mn<0&&mx>0)els.push(h("line",{key:"z",x1:p.l,x2:W-p.r,y1:yp(0),y2:yp(0),stroke:C.bad,strokeWidth:1,strokeDasharray:"4 4",opacity:0.4}));
+  // X labels
+  data.forEach((d,i)=>els.push(h("text",{key:"x"+i,x:xp(i),y:H-6,textAnchor:"middle",fill:"#847D70",fontSize:9,fontFamily:"DM Sans"},d.week)));
+  // Scenario lines
+  if(scenarioData){
+    Object.values(scenarioData).forEach((sd,si)=>{
+      if(!sd.consolidated)return;
+      const pts=sd.consolidated.map((d,i)=>xp(i)+","+yp(d.withStock)).join(" ");
+      els.push(h("polyline",{key:"s"+si,points:pts,fill:"none",stroke:sd.color||C.blue,strokeWidth:1.5,strokeDasharray:si>0?"5 3":"",opacity:0.7}));
+    });
+  }
+  // Primary lines
+  const ptsW=data.map((d,i)=>xp(i)+","+yp(d.withStock)).join(" ");
+  const ptsE=data.map((d,i)=>xp(i)+","+yp(d.exStock)).join(" ");
+  els.push(h("polyline",{key:"w",points:ptsW,fill:"none",stroke:C.steel,strokeWidth:2.5}));
+  els.push(h("polyline",{key:"e",points:ptsE,fill:"none",stroke:C.blue,strokeWidth:2,strokeDasharray:"6 3"}));
+  data.forEach((d,i)=>{els.push(h("circle",{key:"cw"+i,cx:xp(i),cy:yp(d.withStock),r:3,fill:C.steel}));els.push(h("circle",{key:"ce"+i,cx:xp(i),cy:yp(d.exStock),r:2.5,fill:C.blue}))});
+  return h("svg",{width:"100%",viewBox:"0 0 "+W+" "+H,style:{display:"block"}},els);
 }
 
-function App(){
-  const [tab,setTab]=useState("overview");const [eTab,setETab]=useState("US");const [arRegion,setArRegion]=useState("ALL");
-  const [entities,setEntities]=useState(null);const [ar,setAr]=useState([]);const [ap,setAp]=useState([]);
-  const [stockPOs,setStockPOs]=useState([]);const [tradeLoans,setTradeLoans]=useState([]);const [waterfall,setWaterfall]=useState(null);
-  const [loading,setLoading]=useState(true);const [error,setError]=useState(null);
-
-  useEffect(()=>{Promise.all([
-    fetch('/api/entities').then(r=>r.json()),fetch('/api/ar').then(r=>r.json()),
-    fetch('/api/ap').then(r=>r.json()),fetch('/api/stock-pos').then(r=>r.json()),
-    fetch('/api/trade-loans').then(r=>r.json()),fetch('/api/waterfall').then(r=>r.json()),
-  ]).then(([ent,arD,apD,poD,lnD,wf])=>{
-    setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
-    setStockPOs(poD.orders||[]);setTradeLoans(lnD.loans||[]);setWaterfall(wf);setLoading(false);
-  }).catch(e=>{setError(e.message);setLoading(false)})},[]);
-
-  const entMap=useMemo(()=>{const m={};(entities||[]).forEach(e=>m[e.id]=e);return m},[entities]);
-  const totalCash=useMemo(()=>(entities||[]).reduce((s,e)=>{const c=(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s2,b)=>s2+b.balance,0);return s+c*(e.fx_rate||1)},0),[entities]);
-  const totalAR=useMemo(()=>ar.reduce((s,d)=>s+(d.outstanding||0)*((entMap[d.entity_id]||{}).fx_rate||1),0),[ar,entMap]);
-  const arByE=useMemo(()=>{const m={US:{c:0,t:0},CA:{c:0,t:0},UK:{c:0,t:0},AU:{c:0,t:0}};ar.forEach(d=>{if(m[d.entity_id]){m[d.entity_id].c++;m[d.entity_id].t+=(d.outstanding||0)}});return m},[ar]);
-  const filtAR=useMemo(()=>{let d=[...ar];if(arRegion!=="ALL")d=d.filter(x=>x.entity_id===arRegion);d.sort((a,b)=>(b.outstanding||0)-(a.outstanding||0));return d},[ar,arRegion]);
-
-  if(loading)return React.createElement("div",{className:"loading"},"Loading Bureau CFO Dashboard...");
-  if(error)return React.createElement("div",{className:"loading",style:{color:C.danger}},"Error: "+error);
-
-  const TABS=[{id:"overview",l:"Overview"},{id:"ar",l:"Accounts Receivable"},{id:"entity",l:"Entity Cashflow"},{id:"settings",l:"Settings"}];
-  const Hdr=()=>React.createElement("div",{style:{background:C.steel,padding:"0 28px",display:"flex",justifyContent:"space-between",alignItems:"center",height:56}},
-    React.createElement("div",{style:{display:"flex",alignItems:"center",gap:12}},
-      React.createElement("img",{src:"https://withbureau.com/wp-content/uploads/2025/03/Bureau_Branding.svg",alt:"Bureau",style:{height:22,filter:"brightness(0) invert(1)"},onError:e=>e.target.style.display='none'}),
-      React.createElement("div",{style:{width:1,height:24,background:"rgba(255,255,255,0.2)"}}),
-      React.createElement("span",{style:{fontSize:12,color:"rgba(255,255,255,0.6)",fontWeight:500}},"CFO Dashboard")
-    ),
-    React.createElement("div",{style:{fontSize:10,color:"rgba(255,255,255,0.4)"}},ar.length+" AR deals \u00b7 "+ap.length+" AP vendors")
-  );
-  const Nav=()=>React.createElement("div",{style:{padding:"0 28px",borderBottom:"1px solid #E0DFDB",display:"flex"}},
-    TABS.map(t=>React.createElement("button",{key:t.id,onClick:()=>setTab(t.id),style:{padding:"12px 18px",border:"none",borderBottom:tab===t.id?"3px solid "+C.yellow:"3px solid transparent",cursor:"pointer",fontSize:13,fontWeight:tab===t.id?600:400,fontFamily:"inherit",background:"transparent",color:tab===t.id?C.steel:C.midGrey}},t.l))
-  );
-
-  return React.createElement("div",null,
-    React.createElement(Hdr),React.createElement(Nav),
-    React.createElement("div",{style:{padding:"20px 28px",maxWidth:1340,margin:"0 auto"}},
-
-      tab==="overview"&&React.createElement("div",null,
-        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:20}},
-          [{l:"Cash Position",v:fmtF(Math.round(totalCash)),s:"Consolidated USD",c:C.steel},{l:"Total AR",v:fmt(totalAR),s:ar.length+" deals",c:C.success},{l:"Total AP",v:fmt(ap.reduce((s,v)=>s+v.amount,0)),s:ap.length+" vendors",c:C.danger},{l:"Lowest Week",v:waterfall?.consolidated?fmt(Math.min(...waterfall.consolidated.map(w=>w.withStock))):"\u2014",s:"With stock",c:C.orange}].map((k,i)=>
-            React.createElement("div",{key:i,className:"card",style:{padding:"16px 18px",borderLeft:"4px solid "+k.c}},
-              React.createElement("div",{style:{fontSize:11,color:C.midGrey,marginBottom:6}},k.l),
-              React.createElement("div",{style:{fontSize:24,fontWeight:700,letterSpacing:-0.5}},k.v),
-              React.createElement("div",{style:{fontSize:11,color:C.warmGrey,marginTop:2}},k.s)
-            )
-          )
-        ),
-        waterfall?.consolidated&&React.createElement("div",{className:"card",style:{padding:20,marginBottom:16}},
-          React.createElement("div",{style:{marginBottom:14}},
-            React.createElement("div",{style:{fontSize:15,fontWeight:600}},"13-Week Cash Position"),
-            React.createElement("div",{style:{fontSize:11,color:C.midGrey}},"Consolidated USD \u2014 solid=with stock \u00b7 dashed=excl stock")
-          ),
-          React.createElement(Chart,{data:waterfall.consolidated,lines:[{key:"withStock",color:C.steel,width:2.5},{key:"exStock",color:C.blue,width:2,dash:"6 3"}]})
-        ),
-        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14}},
-          ["US","CA","UK","AU"].map(k=>{const e=entMap[k];if(!e)return null;const cash=(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0);return React.createElement("div",{key:k,className:"card entity-card",style:{"--c":C.entity[k],background:C.entityBg[k]},onClick:()=>{setETab(k);setTab("entity")}},
-            React.createElement("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:10}},React.createElement("span",{style:{fontSize:14,fontWeight:700,color:C.entity[k]}},k),React.createElement("span",{style:{fontSize:10,color:C.midGrey}},e.currency)),
-            React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:11}},
-              React.createElement("div",null,React.createElement("div",{style:{fontSize:9,color:C.midGrey}},"Cash"),React.createElement("div",{style:{fontWeight:600}},fmtF(cash))),
-              React.createElement("div",null,React.createElement("div",{style:{fontSize:9,color:C.midGrey}},"AR"),React.createElement("div",{style:{fontWeight:600,color:C.success}},fmt((arByE[k]||{}).t))),
-              React.createElement("div",null,React.createElement("div",{style:{fontSize:9,color:C.midGrey}},"Deals"),React.createElement("div",{style:{fontWeight:600}},(arByE[k]||{}).c)),
-              React.createElement("div",null,React.createElement("div",{style:{fontSize:9,color:C.midGrey}},"Payroll"),React.createElement("div",{style:{fontWeight:600}},e.payroll?fmtF(e.payroll.amount):"\u2014"))
-            )
-          )})
+// Editable rate grid component
+function RateGrid({title,rates,entities,onUpdate}){
+  const byE={};(rates||[]).forEach(r=>{if(!byE[r.entity_id])byE[r.entity_id]=[];byE[r.entity_id].push(r)});
+  return h("div",{className:"card section"},
+    h("div",{className:"card-hdr"},title),
+    h("div",{style:{padding:12}},
+      entities.map(eId=>h("div",{key:eId,style:{marginBottom:8}},
+        h("div",{style:{fontSize:10,fontWeight:600,color:C.ent[eId],marginBottom:4}},eId),
+        h("div",{className:"input-grid"},
+          h("div",{className:"hdr"},"Week"),
+          Array.from({length:11},(_,i)=>h("div",{key:i,className:"hdr",style:{justifyContent:"center"}},i+1)),
+          h("div",{className:"hdr"},"Rate %"),
+          Array.from({length:11},(_,i)=>{
+            const r=(byE[eId]||[]).find(x=>x.week_num===i+1);
+            return h("div",{key:i},h("input",{type:"number",defaultValue:r?Math.round(r.rate*100):0,step:1,min:0,max:100,
+              onBlur:e=>{if(onUpdate)onUpdate(eId,i+1,parseFloat(e.target.value)/100)}}))
+          })
         )
-      ),
-
-      tab==="ar"&&React.createElement("div",null,
-        React.createElement("div",{style:{display:"flex",gap:6,marginBottom:14}},
-          ["ALL","US","CA","UK","AU"].map(r=>React.createElement("button",{key:r,className:"pill"+(arRegion===r?" active":""),style:{"--c":r==="ALL"?C.steel:C.entity[r]},onClick:()=>setArRegion(r)},r==="ALL"?"All":r," (",(r==="ALL"?ar.length:(arByE[r]||{}).c||0),")"))
-        ),
-        React.createElement("div",{className:"card"},
-          React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,
-            ["Deal","Owner","Entity","Outstanding","Cur","Terms","Closed","Promised","Status"].map(h=>React.createElement("th",{key:h},h))
-          )),React.createElement("tbody",null,filtAR.map(d=>React.createElement("tr",{key:d.id},
-            React.createElement("td",{style:{fontWeight:500}},d.deal_name),
-            React.createElement("td",{style:{color:C.midGrey,fontSize:10}},d.owner),
-            React.createElement("td",null,React.createElement("span",{style:{color:C.entity[d.entity_id],fontWeight:600}},d.entity_id)),
-            React.createElement("td",{style:{fontWeight:600}},fmtF(d.outstanding)),
-            React.createElement("td",{style:{color:C.midGrey}},d.currency),
-            React.createElement("td",{style:{color:C.midGrey,fontSize:10,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},d.payment_terms),
-            React.createElement("td",{style:{fontSize:10}},dateFmt(d.close_date)),
-            React.createElement("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
-            React.createElement("td",null,React.createElement("span",{className:"badge "+d.status},d.status))
-          )))),
-          React.createElement("div",{style:{padding:"10px 16px",borderTop:"1px solid #E0DFDB",display:"flex",justifyContent:"space-between",fontSize:12,background:"#F7F8F7"}},
-            React.createElement("span",{style:{color:C.midGrey}},filtAR.length+" deals"),
-            React.createElement("span",{style:{fontWeight:700,color:C.success}},"Total: "+fmtF(Math.round(filtAR.reduce((s,d)=>s+(d.outstanding||0),0))))
-          )
-        )
-      ),
-
-      tab==="entity"&&(()=>{const e=entMap[eTab],eAR=ar.filter(d=>d.entity_id===eTab),eAP=ap.filter(d=>d.entity_id===eTab),ePO=stockPOs.filter(d=>d.entity_id===eTab),eTL=tradeLoans.filter(d=>d.entity_id===eTab),eWF=waterfall?.entities?.[eTab],cash=e?(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0):0;
-        return React.createElement("div",null,
-          React.createElement("div",{style:{display:"flex",gap:6,marginBottom:16}},["US","CA","UK","AU"].map(k=>React.createElement("button",{key:k,className:"pill"+(eTab===k?" active":""),style:{"--c":C.entity[k]},onClick:()=>setETab(k)},(entMap[k]||{}).label||k))),
-          e&&React.createElement("div",{className:"card",style:{padding:18,marginBottom:16,borderTop:"4px solid "+C.entity[eTab],background:C.entityBg[eTab]}},React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},React.createElement("div",null,React.createElement("div",{style:{fontSize:18,fontWeight:700,color:C.entity[eTab]}},e.label),React.createElement("div",{style:{fontSize:12,color:C.midGrey}},e.name+" \u00b7 "+e.currency)),React.createElement("div",{style:{display:"flex",gap:24,textAlign:"center"}},React.createElement("div",null,React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"Cash"),React.createElement("div",{style:{fontSize:20,fontWeight:700}},fmtF(cash))),React.createElement("div",null,React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"AR"),React.createElement("div",{style:{fontSize:20,fontWeight:700,color:C.success}},fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0)))),React.createElement("div",null,React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"AP"),React.createElement("div",{style:{fontSize:20,fontWeight:700,color:C.danger}},fmtF(eAP.reduce((s,d)=>s+d.amount,0))))))),
-          eWF&&React.createElement("div",{className:"card",style:{marginBottom:16}},React.createElement("div",{className:"section-hdr",style:{color:C.steel}},"Weekly Cash Waterfall \u2014 "+((e||{}).name||eTab)),React.createElement("div",{style:{overflowX:"auto"}},React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,React.createElement("th",{style:{minWidth:150}},"Line Item"),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("th",{key:i,style:{textAlign:"right",minWidth:75}},w.week)))),React.createElement("tbody",null,
-            React.createElement("tr",{style:{background:C.offWhite}},React.createElement("td",{style:{fontWeight:700}},"Opening Balance"),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("td",{key:i,style:{textAlign:"right",fontWeight:700}},fmtF(w.open)))),
-            React.createElement("tr",null,React.createElement("td",{style:{color:C.success,fontWeight:600},colSpan:8},"INFLOWS")),
-            React.createElement("tr",null,React.createElement("td",{style:{paddingLeft:24,color:"#5A6660"}},"AR Collections"),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("td",{key:i,style:{textAlign:"right",color:w.arIn?C.success:C.warmGrey}},w.arIn?fmtF(w.arIn):"\u2014"))),
-            React.createElement("tr",null,React.createElement("td",{style:{color:C.danger,fontWeight:600},colSpan:8},"OUTFLOWS")),
-            [{k:"apOut",l:"Vendor AP"},{k:"payroll",l:"Payroll"},{k:"amex",l:"Amex"},{k:"opex",l:"Opex"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"}].map(r=>React.createElement("tr",{key:r.k},React.createElement("td",{style:{paddingLeft:24,color:"#5A6660"}},r.l),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.danger:C.warmGrey}},w[r.k]?"-"+fmtF(w[r.k]):"\u2014")))),
-            React.createElement("tr",{style:{background:C.offWhite,borderTop:"2px solid #E0DFDB"}},React.createElement("td",{style:{fontWeight:700,fontSize:12}},"Closing Balance"),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("td",{key:i,style:{textAlign:"right",fontWeight:700,fontSize:12,color:w.close<0?C.danger:C.steel}},fmtF(w.close))))
-          )))),
-          React.createElement("div",{className:"card",style:{marginBottom:16}},React.createElement("div",{className:"section-hdr",style:{color:C.success,background:"#E6F3ED"}},React.createElement("span",null,"Accounts Receivable"),React.createElement("span",null,fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0))+" "+(e||{}).currency)),React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,["Customer","Owner","Outstanding","Terms","Closed","Promised","Overdue"].map(h=>React.createElement("th",{key:h},h)))),React.createElement("tbody",null,eAR.map(d=>React.createElement("tr",{key:d.id},React.createElement("td",{style:{fontWeight:500}},d.deal_name),React.createElement("td",{style:{color:C.midGrey,fontSize:10}},d.owner),React.createElement("td",{style:{fontWeight:600,color:C.success}},fmtF(d.outstanding)),React.createElement("td",{style:{color:C.midGrey,fontSize:10}},d.payment_terms),React.createElement("td",{style:{fontSize:10}},dateFmt(d.close_date)),React.createElement("td",{style:{fontSize:10}},dateFmt(d.promised_date)),React.createElement("td",null,React.createElement("span",{className:"badge "+(d.overdue?"true":"false")},d.overdue?"Yes":"No"))))))),
-          eAP.length>0&&React.createElement("div",{className:"card",style:{marginBottom:16}},React.createElement("div",{className:"section-hdr",style:{color:C.danger,background:"#FCEDED"}},React.createElement("span",null,"Accounts Payable"),React.createElement("span",null,fmtF(eAP.reduce((s,d)=>s+d.amount,0)))),React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,["Vendor","Amount","Due Date"].map(h=>React.createElement("th",{key:h},h)))),React.createElement("tbody",null,eAP.map(d=>React.createElement("tr",{key:d.id},React.createElement("td",{style:{fontWeight:500}},d.vendor_name),React.createElement("td",{style:{fontWeight:600,color:C.danger}},fmtF(d.amount)),React.createElement("td",{style:{fontSize:10}},dateFmt(d.due_date))))))),
-          ePO.length>0&&React.createElement("div",{className:"card",style:{marginBottom:16}},React.createElement("div",{className:"section-hdr",style:{color:C.warn,background:"#FDF6E3"}},"Inventory POs"),React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,["PO","Supplier","Deposit","Dep Due","Release","Rel Due","Total"].map(h=>React.createElement("th",{key:h},h)))),React.createElement("tbody",null,ePO.map(po=>React.createElement("tr",{key:po.id},React.createElement("td",{style:{fontWeight:600,color:C.warn}},po.po_ref),React.createElement("td",{style:{color:C.midGrey}},po.supplier),React.createElement("td",null,fmtF(po.deposit_amount)),React.createElement("td",{style:{fontSize:10}},dateFmt(po.deposit_due)),React.createElement("td",null,fmtF(po.release_amount)),React.createElement("td",{style:{fontSize:10}},dateFmt(po.release_due)),React.createElement("td",{style:{fontWeight:600}},fmtF(po.deposit_amount+po.release_amount))))))),
-          eTL.length>0&&React.createElement("div",{className:"card"},React.createElement("div",{className:"section-hdr",style:{color:C.danger,background:"#FCEDED"}},"Trade Finance"),React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,["Ref","PO","Outstanding","Settlement","Maturity","Rate"].map(h=>React.createElement("th",{key:h},h)))),React.createElement("tbody",null,eTL.map(l=>React.createElement("tr",{key:l.id},React.createElement("td",{style:{fontSize:10}},l.reference),React.createElement("td",{style:{color:C.midGrey}},l.po_ref),React.createElement("td",null,fmtF(l.outstanding)),React.createElement("td",{style:{fontWeight:600,color:C.danger}},fmtF(l.settlement)),React.createElement("td",{style:{fontSize:10}},dateFmt(l.maturity_date)),React.createElement("td",{style:{color:C.midGrey}},l.rate?(l.rate*100).toFixed(2)+"%":"\u2014"))))))
-        )})(),
-
-      tab==="settings"&&React.createElement("div",null,
-        React.createElement("div",{style:{fontSize:16,fontWeight:700,marginBottom:14}},"Bank Accounts"),
-        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:24}},(entities||[]).map(e=>React.createElement("div",{key:e.id,className:"card",style:{padding:16,borderTop:"4px solid "+C.entity[e.id],background:C.entityBg[e.id]}},React.createElement("div",{style:{fontSize:13,fontWeight:700,color:C.entity[e.id],marginBottom:10}},e.id+" \u00b7 "+e.currency),(e.bank_accounts||[]).map(ba=>React.createElement("div",{key:ba.id,style:{marginBottom:8}},React.createElement("div",{style:{fontSize:10,color:C.midGrey}},ba.name+(ba.type==='credit'?' (credit)':'')),React.createElement("div",{style:{fontSize:14,fontWeight:600}},fmtF(ba.balance))))))),
-        React.createElement("div",{style:{fontSize:16,fontWeight:700,marginBottom:14}},"Payroll & Opex"),
-        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14}},(entities||[]).map(e=>React.createElement("div",{key:e.id,className:"card",style:{padding:16}},React.createElement("div",{style:{fontSize:12,fontWeight:600,color:C.entity[e.id],marginBottom:8}},e.id+" \u00b7 "+(e.payroll?.frequency||"")),React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"Payroll: ",React.createElement("strong",{style:{color:C.steel}},fmtF(e.payroll?.amount))),React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"Tax: ",React.createElement("strong",{style:{color:C.steel}},fmtF(e.payroll?.tax))),React.createElement("div",{style:{fontSize:10,color:C.midGrey,marginTop:4}},"Marketing: ",React.createElement("strong",{style:{color:C.steel}},fmtF(e.opex?.marketing))))))
-      )
-    ),
-    React.createElement("div",{style:{borderTop:"1px solid #E0DFDB",padding:"10px 28px",display:"flex",justifyContent:"space-between",fontSize:10,color:C.warmGrey,background:C.offWhite,marginTop:20}},
-      React.createElement("span",null,"Bureau CFO Dashboard \u00b7 HubSpot + Bureau Ops + Syft"),
-      React.createElement("span",null,ar.length+" AR \u00b7 "+ap.length+" AP \u00b7 "+stockPOs.length+" POs")
+      ))
     )
   );
 }
-ReactDOM.render(React.createElement(App),document.getElementById('root'));
+
+// Editable table for entity config
+function EntityConfigTable({config,onSave}){
+  const [data,setData]=us(config||[]);
+  ue(()=>setData(config||[]),[config]);
+  const upd=(eId,field,val)=>{setData(d=>d.map(r=>r.entity_id===eId?{...r,[field]:parseFloat(val)||0}:r))};
+  const fields=[
+    {k:"payroll_amount",l:"Payroll Amount",fmt:fmtF},
+    {k:"payroll_tax",l:"Payroll Tax",fmt:fmtF},
+    {k:"payroll_frequency",l:"Frequency",type:"select",opts:["bimonthly","monthly","fortnightly"]},
+    {k:"marketing_weekly_local",l:"Marketing/wk",fmt:fmtF},
+    {k:"rent_weekly",l:"Rent/wk",fmt:fmtF},
+    {k:"misc_weekly",l:"Misc/wk",fmt:fmtF},
+    {k:"di_cogs_rate",l:"D&I COGS %",fmt:pct},
+  ];
+  return h("div",{className:"card section"},
+    h("div",{className:"card-hdr"},
+      h("span",null,"Payroll & Operating Costs"),
+      h("button",{className:"btn btn-sm btn-primary",onClick:()=>onSave&&onSave(data)},"Save")
+    ),
+    h("table",null,
+      h("thead",null,h("tr",null,h("th",null,""),data.map(r=>h("th",{key:r.entity_id,style:{color:C.ent[r.entity_id]}},r.entity_id)))),
+      h("tbody",null,fields.map(f=>h("tr",{key:f.k},
+        h("td",{style:{fontWeight:500,color:C.mid,fontSize:10}},f.l),
+        data.map(r=>h("td",{key:r.entity_id},
+          f.type==="select"?
+            h("select",{value:r[f.k]||"",onChange:e=>upd(r.entity_id,f.k,e.target.value)},
+              (f.opts||[]).map(o=>h("option",{key:o,value:o},o))):
+            h("input",{type:"number",value:r[f.k]||0,onChange:e=>upd(r.entity_id,f.k,e.target.value)})
+        ))
+      )))
+    )
+  );
+}
+
+// New Orders config
+function NewOrdersTable({orders,onSave}){
+  const [data,setData]=us(orders||[]);
+  ue(()=>setData(orders||[]),[orders]);
+  const upd=(eId,f,v)=>setData(d=>d.map(r=>r.entity_id===eId?{...r,[f]:parseFloat(v)||0}:r));
+  return h("div",{className:"card section"},
+    h("div",{className:"card-hdr"},h("span",null,"New Orders Revenue"),h("button",{className:"btn btn-sm btn-primary",onClick:()=>onSave&&onSave(data)},"Save")),
+    h("table",null,
+      h("thead",null,h("tr",null,["","Monthly Revenue (Local)","Delay Weeks","Ramp Weeks","COGS Rate %","Replacement Rate %"].map((l,i)=>h("th",{key:i},l)))),
+      h("tbody",null,data.map(r=>h("tr",{key:r.entity_id},
+        h("td",{style:{fontWeight:600,color:C.ent[r.entity_id]}},r.entity_id),
+        h("td",null,h("input",{type:"number",value:r.monthly_revenue_local||0,onChange:e=>upd(r.entity_id,"monthly_revenue_local",e.target.value)})),
+        h("td",null,h("input",{type:"number",value:r.delay_weeks||0,onChange:e=>upd(r.entity_id,"delay_weeks",e.target.value)})),
+        h("td",null,h("input",{type:"number",value:r.ramp_weeks||0,onChange:e=>upd(r.entity_id,"ramp_weeks",e.target.value)})),
+        h("td",null,h("input",{type:"number",value:Math.round((r.cogs_rate||0)*100),onChange:e=>upd(r.entity_id,"cogs_rate",parseFloat(e.target.value)/100)})),
+        h("td",null,h("input",{type:"number",value:Math.round((r.replacement_rate||0)*100),onChange:e=>upd(r.entity_id,"replacement_rate",parseFloat(e.target.value)/100)}))
+      )))
+    )
+  );
+}
+
+// Scheduled payments table
+function ScheduledTable({payments,onSave}){
+  const [data,setData]=us(payments||[]);
+  ue(()=>setData(payments||[]),[payments]);
+  return h("div",{className:"card section"},
+    h("div",{className:"card-hdr"},h("span",null,"Scheduled Payments"),
+      h("div",{style:{display:"flex",gap:6}},
+        h("button",{className:"btn btn-sm btn-outline",onClick:()=>setData(d=>[...d,{entity_id:"US",description:"",amount_local:0,frequency:"one-off",day_of_month:1,start_date:"",end_date:""}])},"+Add"),
+        h("button",{className:"btn btn-sm btn-primary",onClick:()=>onSave&&onSave(data)},"Save")
+      )
+    ),
+    h("table",null,
+      h("thead",null,h("tr",null,["Entity","Description","Amount (Local)","Frequency","Day","Start","End",""].map((l,i)=>h("th",{key:i},l)))),
+      h("tbody",null,data.map((sp,i)=>h("tr",{key:i},
+        h("td",null,h("select",{value:sp.entity_id,onChange:e=>{const nd=[...data];nd[i]={...sp,entity_id:e.target.value};setData(nd)}},["US","CA","UK","AU"].map(e=>h("option",{key:e},e)))),
+        h("td",null,h("input",{type:"text",value:sp.description||"",onChange:e=>{const nd=[...data];nd[i]={...sp,description:e.target.value};setData(nd)}})),
+        h("td",null,h("input",{type:"number",value:sp.amount_local||0,onChange:e=>{const nd=[...data];nd[i]={...sp,amount_local:parseFloat(e.target.value)};setData(nd)}})),
+        h("td",null,h("select",{value:sp.frequency,onChange:e=>{const nd=[...data];nd[i]={...sp,frequency:e.target.value};setData(nd)}},["monthly","one-off"].map(o=>h("option",{key:o},o)))),
+        h("td",null,h("input",{type:"number",value:sp.day_of_month||1,onChange:e=>{const nd=[...data];nd[i]={...sp,day_of_month:parseInt(e.target.value)};setData(nd)}})),
+        h("td",null,h("input",{type:"text",value:sp.start_date||"",placeholder:"YYYY-MM-DD",onChange:e=>{const nd=[...data];nd[i]={...sp,start_date:e.target.value};setData(nd)}})),
+        h("td",null,h("input",{type:"text",value:sp.end_date||"",placeholder:"YYYY-MM-DD",onChange:e=>{const nd=[...data];nd[i]={...sp,end_date:e.target.value};setData(nd)}})),
+        h("td",null,h("button",{className:"btn btn-sm btn-outline",style:{color:C.bad},onClick:()=>setData(d=>d.filter((_,j)=>j!==i))},"\u00d7"))
+      )))
+    )
+  );
+}
+
+// Amex payoff table
+function AmexTable({amex,onSave}){
+  const [data,setData]=us(amex||[]);
+  ue(()=>setData(amex||[]),[amex]);
+  const upd=(eId,f,v)=>setData(d=>d.map(r=>r.entity_id===eId?{...r,[f]:parseFloat(v)||0}:r));
+  return h("div",{className:"card section"},
+    h("div",{className:"card-hdr"},h("span",null,"Amex Payoff Schedule"),h("button",{className:"btn btn-sm btn-primary",onClick:()=>onSave&&onSave(data)},"Save")),
+    h("table",null,
+      h("thead",null,h("tr",null,["Entity","Balance","Weeks to Pay","Start Week","Payment Week (0=spread)"].map((l,i)=>h("th",{key:i},l)))),
+      h("tbody",null,data.map(r=>h("tr",{key:r.entity_id},
+        h("td",{style:{fontWeight:600,color:C.ent[r.entity_id]}},r.entity_id),
+        h("td",null,h("input",{type:"number",value:r.balance||0,onChange:e=>upd(r.entity_id,"balance",e.target.value)})),
+        h("td",null,h("input",{type:"number",value:r.weeks_to_pay||0,onChange:e=>upd(r.entity_id,"weeks_to_pay",e.target.value)})),
+        h("td",null,h("input",{type:"number",value:r.start_week||0,onChange:e=>upd(r.entity_id,"start_week",e.target.value)})),
+        h("td",null,h("input",{type:"number",value:r.payment_week||0,onChange:e=>upd(r.entity_id,"payment_week",e.target.value)}))
+      )))
+    )
+  );
+}
+
+// Main App
+function App(){
+  const [tab,setTab]=us("overview");
+  const [eTab,setETab]=us("US");
+  const [arRegion,setArRegion]=us("ALL");
+  const [entities,setEntities]=us(null);
+  const [ar,setAr]=us([]);
+  const [ap,setAp]=us([]);
+  const [stockPOs,setStockPOs]=us([]);
+  const [tradeLoans,setTradeLoans]=us([]);
+  const [waterfall,setWaterfall]=us(null);
+  const [inputs,setInputs]=us(null);
+  const [scenarios,setScenarios]=us([]);
+  const [loading,setLoading]=us(true);
+  const [error,setError]=us(null);
+  const [saving,setSaving]=us(false);
+
+  const load=()=>{
+    Promise.all([
+      fetch('/api/entities').then(r=>r.json()),
+      fetch('/api/ar').then(r=>r.json()),
+      fetch('/api/ap').then(r=>r.json()),
+      fetch('/api/stock-pos').then(r=>r.json()),
+      fetch('/api/trade-loans').then(r=>r.json()),
+      fetch('/api/waterfall?scenarios=1,2').then(r=>r.json()),
+      fetch('/api/inputs').then(r=>r.json()),
+      fetch('/api/scenarios').then(r=>r.json()),
+    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc])=>{
+      setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
+      setStockPOs(poD.orders||[]);setTradeLoans(lnD.loans||[]);
+      setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setLoading(false);
+    }).catch(e=>{setError(e.message);setLoading(false)});
+  };
+  ue(load,[]);
+
+  const entMap=um(()=>{const m={};(entities||[]).forEach(e=>m[e.id]=e);return m},[entities]);
+  const totalCash=um(()=>(entities||[]).reduce((s,e)=>{const c=(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s2,b)=>s2+b.balance,0);return s+c*(e.fx_rate||1)},0),[entities]);
+  const totalAR=um(()=>ar.reduce((s,d)=>s+(d.outstanding||0)*((entMap[d.entity_id]||{}).fx_rate||1),0),[ar,entMap]);
+  const arByE=um(()=>{const m={US:{c:0,t:0},CA:{c:0,t:0},UK:{c:0,t:0},AU:{c:0,t:0}};ar.forEach(d=>{if(m[d.entity_id]){m[d.entity_id].c++;m[d.entity_id].t+=(d.outstanding||0)}});return m},[ar]);
+  const filtAR=um(()=>{let d=[...ar].filter(x=>x.outstanding>0);if(arRegion!=="ALL")d=d.filter(x=>x.entity_id===arRegion);d.sort((a,b)=>(b.outstanding||0)-(a.outstanding||0));return d},[ar,arRegion]);
+
+  const saveInput=async(endpoint,body)=>{
+    setSaving(true);
+    try{await fetch('/api/inputs/'+endpoint,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      // Reload waterfall
+      const wf=await fetch('/api/waterfall?scenarios=1,2').then(r=>r.json());
+      setWaterfall(wf);
+      const inp=await fetch('/api/inputs').then(r=>r.json());
+      setInputs(inp);
+    }catch(e){console.error(e)}
+    setSaving(false);
+  };
+
+  if(loading)return h("div",{className:"loading"},"Loading Bureau CFO Dashboard...");
+  if(error)return h("div",{className:"loading",style:{color:C.bad}},"Error: "+error);
+
+  const TABS=[{id:"overview",l:"Overview"},{id:"ar",l:"AR Chasing"},{id:"entity",l:"Entity Cashflow"},{id:"stock",l:"Stock Payments"},{id:"inputs",l:"Inputs"},{id:"scenarios",l:"Scenarios"}];
+  const lowestWk=waterfall?.consolidated?Math.min(...waterfall.consolidated.map(w=>w.withStock)):0;
+
+  return h("div",null,
+    // Header
+    h("div",{style:{background:C.steel,padding:"0 24px",display:"flex",justifyContent:"space-between",alignItems:"center",height:48}},
+      h("div",{style:{display:"flex",alignItems:"center",gap:10}},
+        h("img",{src:"https://withbureau.com/wp-content/uploads/2025/03/Bureau_Branding.svg",alt:"Bureau",style:{height:18,filter:"brightness(0) invert(1)"},onError:e=>e.target.style.display='none'}),
+        h("div",{style:{width:1,height:20,background:"rgba(255,255,255,0.15)"}}),
+        h("span",{style:{fontSize:11,color:"rgba(255,255,255,0.5)",fontWeight:500}},"CFO Dashboard")),
+      h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+        saving&&h("span",{style:{fontSize:10,color:C.yellow}},"Saving..."),
+        h("span",{style:{fontSize:9,color:"rgba(255,255,255,0.3)"}},ar.filter(d=>d.outstanding>0).length+" AR \u00b7 "+ap.length+" AP"))
+    ),
+    // Nav
+    h("div",{style:{padding:"0 24px",borderBottom:"1px solid #E8E7E3",display:"flex",background:"#fff"}},
+      TABS.map(t=>h("button",{key:t.id,onClick:()=>setTab(t.id),style:{padding:"10px 16px",border:"none",borderBottom:tab===t.id?"3px solid "+C.yellow:"3px solid transparent",cursor:"pointer",fontSize:12,fontWeight:tab===t.id?600:400,fontFamily:"inherit",background:"transparent",color:tab===t.id?C.steel:C.mid}},t.l))
+    ),
+
+    h("div",{className:"tab-content"},
+
+      // ═══ OVERVIEW ═══
+      tab==="overview"&&h("div",null,
+        h("div",{className:"grid-4",style:{marginBottom:16}},
+          [{l:"Cash Position",v:fmtF(Math.round(totalCash)),s:"Consolidated USD",c:C.steel},
+           {l:"Total AR Outstanding",v:fmt(totalAR),s:ar.filter(d=>d.outstanding>0).length+" unpaid deals",c:C.ok},
+           {l:"Total AP",v:fmt(ap.reduce((s,v)=>s+v.amount,0)),s:ap.length+" vendors",c:C.bad},
+           {l:"Lowest Week",v:fmt(lowestWk),s:"With stock payments",c:lowestWk<0?C.bad:C.warn}
+          ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},
+            h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))
+        ),
+        // Chart
+        waterfall?.consolidated&&h("div",{className:"card",style:{padding:16,marginBottom:16}},
+          h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+            h("div",null,h("div",{style:{fontSize:14,fontWeight:600}},"13-Week Cash Position"),
+              h("div",{style:{fontSize:10,color:C.mid}},
+                h("span",{style:{color:C.steel}},"\u2501\u2501")," with stock \u00b7 ",
+                h("span",{style:{color:C.blue}},"\u254C\u254C")," excl. stock")),
+            h("div",{style:{display:"flex",gap:8}},
+              scenarios.filter(s=>s.is_active).map(s=>h("div",{key:s.id,className:"scenario-line"},
+                h("div",{className:"scenario-dot",style:{background:s.color}}),
+                h("span",{style:{fontSize:10,color:C.mid}},s.name)))
+            )
+          ),
+          h(Chart,{data:waterfall.consolidated,scenarioData:waterfall.scenarios,height:240})
+        ),
+        // Entity cards
+        h("div",{className:"grid-4"},
+          ["US","CA","UK","AU"].map(k=>{const e=entMap[k];if(!e)return null;
+            const cash=(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0);
+            return h("div",{key:k,className:"card entity-card",style:{"--c":C.ent[k],background:C.entBg[k]},onClick:()=>{setETab(k);setTab("entity")}},
+              h("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:8}},
+                h("span",{style:{fontSize:13,fontWeight:700,color:C.ent[k]}},k),
+                h("span",{style:{fontSize:9,color:C.mid}},e.currency)),
+              h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:10}},
+                h("div",null,h("div",{style:{fontSize:8,color:C.mid}},"Cash"),h("div",{style:{fontWeight:600}},fmtF(cash))),
+                h("div",null,h("div",{style:{fontSize:8,color:C.mid}},"AR"),h("div",{style:{fontWeight:600,color:C.ok}},fmt((arByE[k]||{}).t))),
+                h("div",null,h("div",{style:{fontSize:8,color:C.mid}},"Deals"),h("div",{style:{fontWeight:600}},(arByE[k]||{}).c)),
+                h("div",null,h("div",{style:{fontSize:8,color:C.mid}},"Payroll"),h("div",{style:{fontWeight:600}},e.payroll?fmtF(e.payroll.amount):"\u2014"))
+              )
+            )})
+        )
+      ),
+
+      // ═══ AR CHASING ═══
+      tab==="ar"&&h("div",null,
+        h("div",{style:{display:"flex",gap:6,marginBottom:12}},
+          ["ALL","US","CA","UK","AU"].map(r=>h("button",{key:r,className:"pill"+(arRegion===r?" active":""),style:{"--c":r==="ALL"?C.steel:C.ent[r]},onClick:()=>setArRegion(r)},r==="ALL"?"All":r," (",(r==="ALL"?ar.filter(d=>d.outstanding>0).length:(arByE[r]||{}).c||0),")"))
+        ),
+        h("div",{className:"card"},
+          h("table",null,h("thead",null,h("tr",null,["Deal","Owner","Entity","Outstanding","Currency","Terms","Closed","Promised","Status"].map(x=>h("th",{key:x},x)))),
+            h("tbody",null,filtAR.map(d=>h("tr",{key:d.id},
+              h("td",{style:{fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},d.deal_name),
+              h("td",{style:{color:C.mid,fontSize:10}},d.owner),
+              h("td",null,h("span",{style:{color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
+              h("td",{style:{fontWeight:600}},fmtF(d.outstanding)),
+              h("td",{style:{color:C.mid}},d.currency),
+              h("td",{style:{color:C.mid,fontSize:10,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},d.payment_terms),
+              h("td",{style:{fontSize:10}},dateFmt(d.close_date)),
+              h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
+              h("td",null,h("span",{className:"badge "+(d.status||"current")},d.status||"current"))
+            )))),
+          h("div",{style:{padding:"8px 12px",borderTop:"1px solid #E8E7E3",display:"flex",justifyContent:"space-between",fontSize:11,background:"#FAFAF8"}},
+            h("span",{style:{color:C.mid}},filtAR.length+" deals"),
+            h("span",{style:{fontWeight:700,color:C.ok}},"Total: "+fmtF(Math.round(filtAR.reduce((s,d)=>s+(d.outstanding||0),0)))))
+        )
+      ),
+
+      // ═══ ENTITY CASHFLOW ═══
+      tab==="entity"&&(()=>{const e=entMap[eTab],eAR=ar.filter(d=>d.entity_id===eTab&&d.outstanding>0),eAP=ap.filter(d=>d.entity_id===eTab),eWF=waterfall?.entities?.[eTab];
+        const cash=e?(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0):0;
+        return h("div",null,
+          h("div",{style:{display:"flex",gap:6,marginBottom:14}},["US","CA","UK","AU"].map(k=>h("button",{key:k,className:"pill"+(eTab===k?" active":""),style:{"--c":C.ent[k]},onClick:()=>setETab(k)},(entMap[k]||{}).label||k))),
+          e&&h("div",{className:"card",style:{padding:16,marginBottom:14,borderTop:"3px solid "+C.ent[eTab],background:C.entBg[eTab]}},
+            h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+              h("div",null,h("div",{style:{fontSize:16,fontWeight:700,color:C.ent[eTab]}},e.label),h("div",{style:{fontSize:11,color:C.mid}},e.name+" \u00b7 "+e.currency)),
+              h("div",{style:{display:"flex",gap:20,textAlign:"center"}},
+                [{l:"Cash",v:fmtF(cash)},{l:"AR ("+eAR.length+")",v:fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0)),c:C.ok},{l:"AP ("+eAP.length+")",v:fmtF(eAP.reduce((s,d)=>s+d.amount,0)),c:C.bad}].map((x,i)=>h("div",{key:i},h("div",{style:{fontSize:9,color:C.mid}},x.l),h("div",{style:{fontSize:18,fontWeight:700,color:x.c||C.steel}},x.v)))
+              )
+            )
+          ),
+          // Waterfall table
+          eWF&&h("div",{className:"card section"},
+            h("div",{className:"card-hdr"},"Weekly Cash Waterfall \u2014 "+(e?.currency||"")),
+            h("div",{style:{overflowX:"auto"}},h("table",null,
+              h("thead",null,h("tr",null,h("th",{style:{minWidth:140}},""),eWF.weeks.slice(0,8).map((w,i)=>h("th",{key:i,style:{textAlign:"right",minWidth:70}},w.week)))),
+              h("tbody",null,
+                h("tr",{style:{background:C.offWhite}},h("td",{style:{fontWeight:700}},"Opening"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600}},fmtF(w.open)))),
+                h("tr",null,h("td",{style:{color:C.ok,fontWeight:600,paddingTop:8},colSpan:9},"INFLOWS")),
+                [{k:"arIn",l:"Overdue AR"},{k:"newOrders",l:"New Orders"}].map(r=>h("tr",{key:r.k},h("td",{style:{paddingLeft:16,color:"#5A6660"}},r.l),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.ok:C.warm}},w[r.k]?fmtF(w[r.k]):"\u2014")))),
+                h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.ok}},"Total In"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.ok}},fmtF(w.totIn)))),
+                h("tr",null,h("td",{style:{color:C.bad,fontWeight:600,paddingTop:8},colSpan:9},"OUTFLOWS")),
+                [{k:"vendorAP",l:"Vendor AP"},{k:"payroll",l:"Payroll"},{k:"marketing",l:"Marketing"},{k:"amexPayoff",l:"Amex Payoff"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"},{k:"scheduled",l:"Scheduled"},{k:"diCogs",l:"D&I COGS"},{k:"invRepl",l:"Inventory Repl."}].map(r=>h("tr",{key:r.k},h("td",{style:{paddingLeft:16,color:"#5A6660"}},r.l),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.bad:C.warm}},w[r.k]?"-"+fmtF(w[r.k]):"\u2014")))),
+                h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.bad}},"Total Out"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.bad}},"-"+fmtF(w.totOut)))),
+                h("tr",{style:{background:C.offWhite,borderTop:"2px solid #E8E7E3"}},h("td",{style:{fontWeight:700}},"Closing"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:700,color:w.close<0?C.bad:C.steel}},fmtF(w.close)))),
+                h("tr",null,h("td",{style:{fontSize:10,color:C.mid}},"Ex. Stock"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontSize:10,color:C.blue}},fmtF(w.closeExStock))))
+              )
+            ))
+          ),
+          // AR table
+          h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},h("span",null,"AR ("+eAR.length+")"),h("span",null,fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0)))),
+            h("table",null,h("thead",null,h("tr",null,["Customer","Owner","Outstanding","Terms","Promised","Status"].map(x=>h("th",{key:x},x)))),
+              h("tbody",null,eAR.map(d=>h("tr",{key:d.id},h("td",{style:{fontWeight:500}},d.deal_name),h("td",{style:{color:C.mid,fontSize:10}},d.owner),h("td",{style:{fontWeight:600,color:C.ok}},fmtF(d.outstanding)),h("td",{style:{color:C.mid,fontSize:10}},d.payment_terms),h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),h("td",null,h("span",{className:"badge "+(d.status||"current")},d.status))))))),
+          // AP table
+          eAP.length>0&&h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},h("span",null,"AP"),h("span",null,fmtF(eAP.reduce((s,d)=>s+d.amount,0)))),
+            h("table",null,h("thead",null,h("tr",null,["Vendor","Amount"].map(x=>h("th",{key:x},x)))),
+              h("tbody",null,eAP.map(d=>h("tr",{key:d.id},h("td",{style:{fontWeight:500}},d.vendor_name),h("td",{style:{fontWeight:600,color:C.bad}},fmtF(d.amount)))))))
+        )})(),
+
+      // ═══ STOCK PAYMENTS ═══
+      tab==="stock"&&h("div",null,
+        h("div",{className:"card section"},
+          h("div",{className:"card-hdr"},h("span",null,"Stock PO Payments \u2014 Bureau Ops"),
+            h("a",{href:"https://bureau-ops.withbureau.com",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none"}},"Open Bureau Ops \u2197")),
+          h("table",null,
+            h("thead",null,h("tr",null,["Entity","PO","Supplier","Deposit","Dep Due","Release","Rel Due","Total","Status"].map(x=>h("th",{key:x},x)))),
+            h("tbody",null,stockPOs.map(po=>h("tr",{key:po.id},
+              h("td",null,h("span",{style:{color:C.ent[po.entity_id],fontWeight:600}},po.entity_id)),
+              h("td",{style:{fontWeight:600,color:C.warn}},po.po_ref),
+              h("td",{style:{color:C.mid}},po.supplier),
+              h("td",null,fmtF(po.deposit_amount)),
+              h("td",{style:{fontSize:10}},dateFmt(po.deposit_due)),
+              h("td",null,fmtF(po.release_amount)),
+              h("td",{style:{fontSize:10}},dateFmt(po.release_due)),
+              h("td",{style:{fontWeight:600}},fmtF((po.deposit_amount||0)+(po.release_amount||0))),
+              h("td",null,h("span",{className:"badge current"},"pending"))
+            ))))
+        ),
+        // Trade finance
+        tradeLoans.length>0&&h("div",{className:"card section"},
+          h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},"Trade Finance Maturities \u2014 AU"),
+          h("table",null,
+            h("thead",null,h("tr",null,["Reference","PO","Outstanding","Settlement","Maturity","Rate"].map(x=>h("th",{key:x},x)))),
+            h("tbody",null,tradeLoans.map(l=>h("tr",{key:l.id},
+              h("td",{style:{fontSize:10}},l.reference),h("td",{style:{color:C.mid}},l.po_ref),
+              h("td",null,fmtF(l.outstanding)),h("td",{style:{fontWeight:600,color:C.bad}},fmtF(l.settlement)),
+              h("td",{style:{fontSize:10}},dateFmt(l.maturity_date)),h("td",{style:{color:C.mid}},l.rate?(l.rate*100).toFixed(1)+"%":"\u2014")
+            ))))
+        )
+      ),
+
+      // ═══ INPUTS ═══
+      tab==="inputs"&&inputs&&h("div",null,
+        h("div",{style:{marginBottom:16}},
+          h("div",{style:{fontSize:16,fontWeight:700,marginBottom:4}},"Input Assumptions"),
+          h("div",{style:{fontSize:11,color:C.mid}},"Edit any value below. Changes are saved to the database and immediately reflected in the waterfall calculation. All amounts in local currency.")),
+        // Bank accounts
+        h("div",{className:"card section"},
+          h("div",{className:"card-hdr"},"Bank Accounts \u2014 Opening Balances"),
+          h("div",{className:"grid-4",style:{padding:12}},
+            (entities||[]).map(e=>h("div",{key:e.id,style:{padding:12,borderRadius:6,border:"1px solid #E8E7E3",borderTop:"3px solid "+C.ent[e.id],background:C.entBg[e.id]}},
+              h("div",{style:{fontSize:12,fontWeight:700,color:C.ent[e.id],marginBottom:8}},e.id+" \u00b7 "+e.currency),
+              (e.bank_accounts||[]).map(ba=>h("div",{key:ba.id,style:{marginBottom:6}},
+                h("div",{style:{fontSize:9,color:C.mid}},ba.name+(ba.type==='credit'?' (credit)':'')),
+                h("div",{style:{fontSize:13,fontWeight:600}},fmtF(ba.balance))
+              ))
+            ))
+          )
+        ),
+        // Entity config (payroll, marketing etc)
+        h(EntityConfigTable,{config:inputs.entity_config,onSave:d=>saveInput('entity-config',{entities:d})}),
+        // New orders
+        h(NewOrdersTable,{orders:inputs.new_orders,onSave:d=>saveInput('new-orders',{entities:d})}),
+        // AR collection rates
+        h(RateGrid,{title:"AR Collection Rates (% of overdue AR collected per week)",rates:inputs.ar_collection,entities:["US","CA","UK","AU"],
+          onUpdate:(eId,wk,rate)=>saveInput('ar-collection',{rates:[{entity_id:eId,week_num:wk,rate}]})}),
+        // AP spread rates
+        h(RateGrid,{title:"AP Payment Spread (% of vendor AP paid per week)",rates:inputs.ap_spread,entities:["US","CA","UK","AU"],
+          onUpdate:(eId,wk,rate)=>saveInput('ap-spread',{rates:[{entity_id:eId,week_num:wk,rate}]})}),
+        // Amex payoff
+        h(AmexTable,{amex:inputs.amex_payoff,onSave:d=>saveInput('amex-payoff',{entities:d})}),
+        // Scheduled payments
+        h(ScheduledTable,{payments:inputs.scheduled_payments,onSave:d=>saveInput('scheduled-payments',{replace_all:true,payments:d})}),
+      ),
+
+      // ═══ SCENARIOS ═══
+      tab==="scenarios"&&h("div",null,
+        h("div",{style:{fontSize:16,fontWeight:700,marginBottom:4}},"Scenario Modelling"),
+        h("div",{style:{fontSize:11,color:C.mid,marginBottom:16}},"Create scenarios to model different cash outcomes. Active scenarios appear as additional lines on the Overview chart."),
+        h("div",{className:"grid-2"},
+          scenarios.map(s=>h("div",{key:s.id,className:"card",style:{padding:16,borderLeft:"4px solid "+(s.color||C.blue)}},
+            h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}},
+              h("div",{style:{fontSize:14,fontWeight:700}},s.name),
+              h("span",{className:"badge "+(s.is_active?"paid":"current")},s.is_active?"Active":"Inactive")),
+            h("div",{style:{fontSize:11,color:C.mid,marginBottom:8}},s.description),
+            s.overrides&&h("div",null,
+              Object.entries(s.overrides).map(([k,v])=>h("div",{key:k,style:{fontSize:10,display:"flex",justifyContent:"space-between",padding:"2px 0",borderBottom:"1px solid #F0EFEB"}},
+                h("span",{style:{color:C.mid}},k.replace(/_/g," ")),
+                h("span",{style:{fontWeight:600}},v)))
+            )
+          ))
+        )
+      ),
+    ),
+
+    // Footer
+    h("div",{style:{borderTop:"1px solid #E8E7E3",padding:"8px 24px",display:"flex",justifyContent:"space-between",fontSize:9,color:C.warm,background:"#fff",marginTop:16}},
+      h("span",null,"Bureau CFO Dashboard \u00b7 Live Calculation Engine"),
+      h("span",null,"HubSpot + Syft + Bureau Ops"))
+  );
+}
+ReactDOM.render(h(App),document.getElementById('root'));
 </script>
-</body></html>
+</body>
+</html>
