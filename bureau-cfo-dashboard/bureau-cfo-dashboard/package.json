@@ -1,0 +1,17 @@
+{
+  "name": "bureau-cfo-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bureau CFO Dashboard — 13-Week Cash Flow Forecast with HubSpot AR, Bureau Ops AP, and Syft integration",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute bureau-cfo --file=./schema/schema.sql",
+    "db:seed": "wrangler d1 execute bureau-cfo --file=./schema/seed.sql",
+    "db:init:remote": "wrangler d1 execute bureau-cfo --file=./schema/schema.sql --remote",
+    "db:seed:remote": "wrangler d1 execute bureau-cfo --file=./schema/seed.sql --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
