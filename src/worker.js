@@ -1,6 +1,8 @@
-// bureau-cfo Worker — API backend for CFO Dashboard
+// bureau-cfo Worker — API + Frontend for CFO Dashboard
 // Bindings: DB (D1), CONFIG (KV)
 // Data sources: HubSpot CRM, Bureau Ops Worker, Syft (via D1 overrides)
+
+import FRONTEND_HTML from './frontend.html';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -58,6 +60,13 @@ async function handleRequest(request, env, ctx) {
   }
 
   try {
+    // ── Frontend Dashboard ─────────────────────────────
+    if (path === '/' || path === '/index.html') {
+      return new Response(FRONTEND_HTML, {
+        headers: { 'Content-Type': 'text/html;charset=UTF-8', ...CORS },
+      });
+    }
+
     // ── Health ──────────────────────────────────────────
     if (path === '/api/health') {
       return json({ status: 'ok', timestamp: new Date().toISOString() });
