@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bureau — CFO Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'DM Sans',Helvetica,Arial,sans-serif;background:#fff;color:#213640}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:#C4C3C1;border-radius:3px}
+.pill{padding:6px 14px;border-radius:20px;border:1.5px solid #E0DFDB;cursor:pointer;font-family:inherit;font-size:12px;font-weight:500;background:#fff;color:#847D70;transition:all 0.15s}
+.pill.active{border-color:var(--c);background:color-mix(in srgb,var(--c) 10%,white);color:var(--c);font-weight:600}
+.card{background:#fff;border:1px solid #E0DFDB;border-radius:8px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:11px}
+th{text-align:left;padding:8px 12px;font-size:9px;color:#847D70;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;border-bottom:1px solid #E0DFDB}
+td{padding:7px 12px;border-bottom:1px solid #EDECE8}tr:nth-child(even){background:#F7F8F7}
+.badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600;text-transform:capitalize}
+.badge.overdue,.badge.true{background:#FCEDED;color:#C0392B}.badge.current{background:#FDF6E3;color:#B8860B}
+.badge.upcoming,.badge.false,.badge.paid{background:#E6F3ED;color:#2D7F5E}
+.section-hdr{padding:10px 16px;border-bottom:1px solid #E0DFDB;font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+.entity-card{padding:16px;cursor:pointer;transition:box-shadow 0.15s;border-top:4px solid var(--c)}
+.entity-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.06)}
+.loading{display:flex;align-items:center;justify-content:center;height:300px;color:#847D70;font-size:14px}
+</style>
+</head>
+<body>
+<div id="root"><div class="loading">Loading Bureau CFO Dashboard...</div></div>
+<script type="text/javascript">
+const {useState,useEffect,useMemo}=React;
+const C={yellow:"#FFFD6D",steel:"#213640",midGrey:"#847D70",warmGrey:"#C4C3C1",blue:"#3171F1",orange:"#FF603B",offWhite:"#F7F4E7",success:"#2D7F5E",danger:"#C0392B",warn:"#B8860B",entity:{US:"#3171F1",CA:"#B8860B",UK:"#7B6BB5",AU:"#2D7F5E"},entityBg:{US:"#EDF2FE",CA:"#FDF6E3",UK:"#F0EDF8",AU:"#E6F3ED"}};
+const fmt=n=>{if(n==null)return"\u2014";const a=Math.abs(n);if(a>=1e6)return(n<0?"-":"")+"$"+(a/1e6).toFixed(2)+"M";if(a>=1e3)return(n<0?"-":"")+"$"+(a/1e3).toFixed(0)+"K";return(n<0?"-$":"$")+a.toFixed(0)};
+const fmtF=n=>{if(n==null)return"\u2014";return(n<0?"-$":"$")+Math.abs(n).toLocaleString("en-US",{maximumFractionDigits:0})};
+const dateFmt=d=>d?new Date(d+"T00:00:00").toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}):"\u2014";
+
+function Chart({data,lines,width:W,height:H}){
+  W=W||800;H=H||200;if(!data||!data.length)return null;
+  const p={t:20,r:20,b:30,l:55},w=W-p.l-p.r,h=H-p.t-p.b;
+  const all=data.flatMap(d=>lines.map(l=>d[l.key]||0));
+  const mn=Math.min(...all)*0.9,mx=Math.max(...all)*1.05,rng=mx-mn||1;
+  const xp=i=>p.l+(i/(data.length-1))*w;
+  const yp=v=>p.t+h-((v-mn)/rng)*h;
+  const tks=[mn,mn+rng*.25,mn+rng*.5,mn+rng*.75,mx];
+  return React.createElement("svg",{width:"100%",viewBox:"0 0 "+W+" "+H,style:{display:"block"}},
+    tks.map((t,i)=>React.createElement("g",{key:"t"+i},
+      React.createElement("line",{x1:p.l,x2:W-p.r,y1:yp(t),y2:yp(t),stroke:"#EDECE8",strokeWidth:1}),
+      React.createElement("text",{x:p.l-8,y:yp(t)+4,textAnchor:"end",fill:"#847D70",fontSize:10,fontFamily:"DM Sans"},fmt(t))
+    )),
+    React.createElement("line",{x1:p.l,x2:W-p.r,y1:yp(200000),y2:yp(200000),stroke:C.danger,strokeWidth:1,strokeDasharray:"4 4",opacity:0.5}),
+    data.map((d,i)=>React.createElement("text",{key:"l"+i,x:xp(i),y:H-6,textAnchor:"middle",fill:"#847D70",fontSize:10,fontFamily:"DM Sans"},d.week)),
+    lines.map(l=>React.createElement("g",{key:l.key},
+      React.createElement("polyline",{points:data.map((d,i)=>xp(i)+","+yp(d[l.key]||0)).join(" "),fill:"none",stroke:l.color,strokeWidth:l.width||2.5,strokeDasharray:l.dash||""}),
+      data.map((d,i)=>React.createElement("circle",{key:i,cx:xp(i),cy:yp(d[l.key]||0),r:3,fill:l.color}))
+    ))
+  );
+}
+
+function App(){
+  const [tab,setTab]=useState("overview");const [eTab,setETab]=useState("US");const [arRegion,setArRegion]=useState("ALL");
+  const [entities,setEntities]=useState(null);const [ar,setAr]=useState([]);const [ap,setAp]=useState([]);
+  const [stockPOs,setStockPOs]=useState([]);const [tradeLoans,setTradeLoans]=useState([]);const [waterfall,setWaterfall]=useState(null);
+  const [loading,setLoading]=useState(true);const [error,setError]=useState(null);
+
+  useEffect(()=>{Promise.all([
+    fetch('/api/entities').then(r=>r.json()),fetch('/api/ar').then(r=>r.json()),
+    fetch('/api/ap').then(r=>r.json()),fetch('/api/stock-pos').then(r=>r.json()),
+    fetch('/api/trade-loans').then(r=>r.json()),fetch('/api/waterfall').then(r=>r.json()),
+  ]).then(([ent,arD,apD,poD,lnD,wf])=>{
+    setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
+    setStockPOs(poD.orders||[]);setTradeLoans(lnD.loans||[]);setWaterfall(wf);setLoading(false);
+  }).catch(e=>{setError(e.message);setLoading(false)})},[]);
+
+  const entMap=useMemo(()=>{const m={};(entities||[]).forEach(e=>m[e.id]=e);return m},[entities]);
+  const totalCash=useMemo(()=>(entities||[]).reduce((s,e)=>{const c=(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s2,b)=>s2+b.balance,0);return s+c*(e.fx_rate||1)},0),[entities]);
+  const totalAR=useMemo(()=>ar.reduce((s,d)=>s+(d.outstanding||0)*((entMap[d.entity_id]||{}).fx_rate||1),0),[ar,entMap]);
+  const arByE=useMemo(()=>{const m={US:{c:0,t:0},CA:{c:0,t:0},UK:{c:0,t:0},AU:{c:0,t:0}};ar.forEach(d=>{if(m[d.entity_id]){m[d.entity_id].c++;m[d.entity_id].t+=(d.outstanding||0)}});return m},[ar]);
+  const filtAR=useMemo(()=>{let d=[...ar];if(arRegion!=="ALL")d=d.filter(x=>x.entity_id===arRegion);d.sort((a,b)=>(b.outstanding||0)-(a.outstanding||0));return d},[ar,arRegion]);
+
+  if(loading)return React.createElement("div",{className:"loading"},"Loading Bureau CFO Dashboard...");
+  if(error)return React.createElement("div",{className:"loading",style:{color:C.danger}},"Error: "+error);
+
+  const TABS=[{id:"overview",l:"Overview"},{id:"ar",l:"Accounts Receivable"},{id:"entity",l:"Entity Cashflow"},{id:"settings",l:"Settings"}];
+  const Hdr=()=>React.createElement("div",{style:{background:C.steel,padding:"0 28px",display:"flex",justifyContent:"space-between",alignItems:"center",height:56}},
+    React.createElement("div",{style:{display:"flex",alignItems:"center",gap:12}},
+      React.createElement("img",{src:"https://withbureau.com/wp-content/uploads/2025/03/Bureau_Branding.svg",alt:"Bureau",style:{height:22,filter:"brightness(0) invert(1)"},onError:e=>e.target.style.display='none'}),
+      React.createElement("div",{style:{width:1,height:24,background:"rgba(255,255,255,0.2)"}}),
+      React.createElement("span",{style:{fontSize:12,color:"rgba(255,255,255,0.6)",fontWeight:500}},"CFO Dashboard")
+    ),
+    React.createElement("div",{style:{fontSize:10,color:"rgba(255,255,255,0.4)"}},ar.length+" AR deals \u00b7 "+ap.length+" AP vendors")
+  );
+  const Nav=()=>React.createElement("div",{style:{padding:"0 28px",borderBottom:"1px solid #E0DFDB",display:"flex"}},
+    TABS.map(t=>React.createElement("button",{key:t.id,onClick:()=>setTab(t.id),style:{padding:"12px 18px",border:"none",borderBottom:tab===t.id?"3px solid "+C.yellow:"3px solid transparent",cursor:"pointer",fontSize:13,fontWeight:tab===t.id?600:400,fontFamily:"inherit",background:"transparent",color:tab===t.id?C.steel:C.midGrey}},t.l))
+  );
+
+  return React.createElement("div",null,
+    React.createElement(Hdr),React.createElement(Nav),
+    React.createElement("div",{style:{padding:"20px 28px",maxWidth:1340,margin:"0 auto"}},
+
+      tab==="overview"&&React.createElement("div",null,
+        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:20}},
+          [{l:"Cash Position",v:fmtF(Math.round(totalCash)),s:"Consolidated USD",c:C.steel},{l:"Total AR",v:fmt(totalAR),s:ar.length+" deals",c:C.success},{l:"Total AP",v:fmt(ap.reduce((s,v)=>s+v.amount,0)),s:ap.length+" vendors",c:C.danger},{l:"Lowest Week",v:waterfall?.consolidated?fmt(Math.min(...waterfall.consolidated.map(w=>w.withStock))):"\u2014",s:"With stock",c:C.orange}].map((k,i)=>
+            React.createElement("div",{key:i,className:"card",style:{padding:"16px 18px",borderLeft:"4px solid "+k.c}},
+              React.createElement("div",{style:{fontSize:11,color:C.midGrey,marginBottom:6}},k.l),
+              React.createElement("div",{style:{fontSize:24,fontWeight:700,letterSpacing:-0.5}},k.v),
+              React.createElement("div",{style:{fontSize:11,color:C.warmGrey,marginTop:2}},k.s)
+            )
+          )
+        ),
+        waterfall?.consolidated&&React.createElement("div",{className:"card",style:{padding:20,marginBottom:16}},
+          React.createElement("div",{style:{marginBottom:14}},
+            React.createElement("div",{style:{fontSize:15,fontWeight:600}},"13-Week Cash Position"),
+            React.createElement("div",{style:{fontSize:11,color:C.midGrey}},"Consolidated USD \u2014 solid=with stock \u00b7 dashed=excl stock")
+          ),
+          React.createElement(Chart,{data:waterfall.consolidated,lines:[{key:"withStock",color:C.steel,width:2.5},{key:"exStock",color:C.blue,width:2,dash:"6 3"}]})
+        ),
+        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14}},
+          ["US","CA","UK","AU"].map(k=>{const e=entMap[k];if(!e)return null;const cash=(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0);return React.createElement("div",{key:k,className:"card entity-card",style:{"--c":C.entity[k],background:C.entityBg[k]},onClick:()=>{setETab(k);setTab("entity")}},
+            React.createElement("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:10}},React.createElement("span",{style:{fontSize:14,fontWeight:700,color:C.entity[k]}},k),React.createElement("span",{style:{fontSize:10,color:C.midGrey}},e.currency)),
+            React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:11}},
+              React.createElement("div",null,React.createElement("div",{style:{fontSize:9,color:C.midGrey}},"Cash"),React.createElement("div",{style:{fontWeight:600}},fmtF(cash))),
+              React.createElement("div",null,React.createElement("div",{style:{fontSize:9,color:C.midGrey}},"AR"),React.createElement("div",{style:{fontWeight:600,color:C.success}},fmt((arByE[k]||{}).t))),
+              React.createElement("div",null,React.createElement("div",{style:{fontSize:9,color:C.midGrey}},"Deals"),React.createElement("div",{style:{fontWeight:600}},(arByE[k]||{}).c)),
+              React.createElement("div",null,React.createElement("div",{style:{fontSize:9,color:C.midGrey}},"Payroll"),React.createElement("div",{style:{fontWeight:600}},e.payroll?fmtF(e.payroll.amount):"\u2014"))
+            )
+          )})
+        )
+      ),
+
+      tab==="ar"&&React.createElement("div",null,
+        React.createElement("div",{style:{display:"flex",gap:6,marginBottom:14}},
+          ["ALL","US","CA","UK","AU"].map(r=>React.createElement("button",{key:r,className:"pill"+(arRegion===r?" active":""),style:{"--c":r==="ALL"?C.steel:C.entity[r]},onClick:()=>setArRegion(r)},r==="ALL"?"All":r," (",(r==="ALL"?ar.length:(arByE[r]||{}).c||0),")"))
+        ),
+        React.createElement("div",{className:"card"},
+          React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,
+            ["Deal","Owner","Entity","Outstanding","Cur","Terms","Closed","Promised","Status"].map(h=>React.createElement("th",{key:h},h))
+          )),React.createElement("tbody",null,filtAR.map(d=>React.createElement("tr",{key:d.id},
+            React.createElement("td",{style:{fontWeight:500}},d.deal_name),
+            React.createElement("td",{style:{color:C.midGrey,fontSize:10}},d.owner),
+            React.createElement("td",null,React.createElement("span",{style:{color:C.entity[d.entity_id],fontWeight:600}},d.entity_id)),
+            React.createElement("td",{style:{fontWeight:600}},fmtF(d.outstanding)),
+            React.createElement("td",{style:{color:C.midGrey}},d.currency),
+            React.createElement("td",{style:{color:C.midGrey,fontSize:10,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},d.payment_terms),
+            React.createElement("td",{style:{fontSize:10}},dateFmt(d.close_date)),
+            React.createElement("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
+            React.createElement("td",null,React.createElement("span",{className:"badge "+d.status},d.status))
+          )))),
+          React.createElement("div",{style:{padding:"10px 16px",borderTop:"1px solid #E0DFDB",display:"flex",justifyContent:"space-between",fontSize:12,background:"#F7F8F7"}},
+            React.createElement("span",{style:{color:C.midGrey}},filtAR.length+" deals"),
+            React.createElement("span",{style:{fontWeight:700,color:C.success}},"Total: "+fmtF(Math.round(filtAR.reduce((s,d)=>s+(d.outstanding||0),0))))
+          )
+        )
+      ),
+
+      tab==="entity"&&(()=>{const e=entMap[eTab],eAR=ar.filter(d=>d.entity_id===eTab),eAP=ap.filter(d=>d.entity_id===eTab),ePO=stockPOs.filter(d=>d.entity_id===eTab),eTL=tradeLoans.filter(d=>d.entity_id===eTab),eWF=waterfall?.entities?.[eTab],cash=e?(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0):0;
+        return React.createElement("div",null,
+          React.createElement("div",{style:{display:"flex",gap:6,marginBottom:16}},["US","CA","UK","AU"].map(k=>React.createElement("button",{key:k,className:"pill"+(eTab===k?" active":""),style:{"--c":C.entity[k]},onClick:()=>setETab(k)},(entMap[k]||{}).label||k))),
+          e&&React.createElement("div",{className:"card",style:{padding:18,marginBottom:16,borderTop:"4px solid "+C.entity[eTab],background:C.entityBg[eTab]}},React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},React.createElement("div",null,React.createElement("div",{style:{fontSize:18,fontWeight:700,color:C.entity[eTab]}},e.label),React.createElement("div",{style:{fontSize:12,color:C.midGrey}},e.name+" \u00b7 "+e.currency)),React.createElement("div",{style:{display:"flex",gap:24,textAlign:"center"}},React.createElement("div",null,React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"Cash"),React.createElement("div",{style:{fontSize:20,fontWeight:700}},fmtF(cash))),React.createElement("div",null,React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"AR"),React.createElement("div",{style:{fontSize:20,fontWeight:700,color:C.success}},fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0)))),React.createElement("div",null,React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"AP"),React.createElement("div",{style:{fontSize:20,fontWeight:700,color:C.danger}},fmtF(eAP.reduce((s,d)=>s+d.amount,0))))))),
+          eWF&&React.createElement("div",{className:"card",style:{marginBottom:16}},React.createElement("div",{className:"section-hdr",style:{color:C.steel}},"Weekly Cash Waterfall \u2014 "+((e||{}).name||eTab)),React.createElement("div",{style:{overflowX:"auto"}},React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,React.createElement("th",{style:{minWidth:150}},"Line Item"),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("th",{key:i,style:{textAlign:"right",minWidth:75}},w.week)))),React.createElement("tbody",null,
+            React.createElement("tr",{style:{background:C.offWhite}},React.createElement("td",{style:{fontWeight:700}},"Opening Balance"),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("td",{key:i,style:{textAlign:"right",fontWeight:700}},fmtF(w.open)))),
+            React.createElement("tr",null,React.createElement("td",{style:{color:C.success,fontWeight:600},colSpan:8},"INFLOWS")),
+            React.createElement("tr",null,React.createElement("td",{style:{paddingLeft:24,color:"#5A6660"}},"AR Collections"),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("td",{key:i,style:{textAlign:"right",color:w.arIn?C.success:C.warmGrey}},w.arIn?fmtF(w.arIn):"\u2014"))),
+            React.createElement("tr",null,React.createElement("td",{style:{color:C.danger,fontWeight:600},colSpan:8},"OUTFLOWS")),
+            [{k:"apOut",l:"Vendor AP"},{k:"payroll",l:"Payroll"},{k:"amex",l:"Amex"},{k:"opex",l:"Opex"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"}].map(r=>React.createElement("tr",{key:r.k},React.createElement("td",{style:{paddingLeft:24,color:"#5A6660"}},r.l),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.danger:C.warmGrey}},w[r.k]?"-"+fmtF(w[r.k]):"\u2014")))),
+            React.createElement("tr",{style:{background:C.offWhite,borderTop:"2px solid #E0DFDB"}},React.createElement("td",{style:{fontWeight:700,fontSize:12}},"Closing Balance"),eWF.weeks.slice(0,7).map((w,i)=>React.createElement("td",{key:i,style:{textAlign:"right",fontWeight:700,fontSize:12,color:w.close<0?C.danger:C.steel}},fmtF(w.close))))
+          )))),
+          React.createElement("div",{className:"card",style:{marginBottom:16}},React.createElement("div",{className:"section-hdr",style:{color:C.success,background:"#E6F3ED"}},React.createElement("span",null,"Accounts Receivable"),React.createElement("span",null,fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0))+" "+(e||{}).currency)),React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,["Customer","Owner","Outstanding","Terms","Closed","Promised","Overdue"].map(h=>React.createElement("th",{key:h},h)))),React.createElement("tbody",null,eAR.map(d=>React.createElement("tr",{key:d.id},React.createElement("td",{style:{fontWeight:500}},d.deal_name),React.createElement("td",{style:{color:C.midGrey,fontSize:10}},d.owner),React.createElement("td",{style:{fontWeight:600,color:C.success}},fmtF(d.outstanding)),React.createElement("td",{style:{color:C.midGrey,fontSize:10}},d.payment_terms),React.createElement("td",{style:{fontSize:10}},dateFmt(d.close_date)),React.createElement("td",{style:{fontSize:10}},dateFmt(d.promised_date)),React.createElement("td",null,React.createElement("span",{className:"badge "+(d.overdue?"true":"false")},d.overdue?"Yes":"No"))))))),
+          eAP.length>0&&React.createElement("div",{className:"card",style:{marginBottom:16}},React.createElement("div",{className:"section-hdr",style:{color:C.danger,background:"#FCEDED"}},React.createElement("span",null,"Accounts Payable"),React.createElement("span",null,fmtF(eAP.reduce((s,d)=>s+d.amount,0)))),React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,["Vendor","Amount","Due Date"].map(h=>React.createElement("th",{key:h},h)))),React.createElement("tbody",null,eAP.map(d=>React.createElement("tr",{key:d.id},React.createElement("td",{style:{fontWeight:500}},d.vendor_name),React.createElement("td",{style:{fontWeight:600,color:C.danger}},fmtF(d.amount)),React.createElement("td",{style:{fontSize:10}},dateFmt(d.due_date))))))),
+          ePO.length>0&&React.createElement("div",{className:"card",style:{marginBottom:16}},React.createElement("div",{className:"section-hdr",style:{color:C.warn,background:"#FDF6E3"}},"Inventory POs"),React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,["PO","Supplier","Deposit","Dep Due","Release","Rel Due","Total"].map(h=>React.createElement("th",{key:h},h)))),React.createElement("tbody",null,ePO.map(po=>React.createElement("tr",{key:po.id},React.createElement("td",{style:{fontWeight:600,color:C.warn}},po.po_ref),React.createElement("td",{style:{color:C.midGrey}},po.supplier),React.createElement("td",null,fmtF(po.deposit_amount)),React.createElement("td",{style:{fontSize:10}},dateFmt(po.deposit_due)),React.createElement("td",null,fmtF(po.release_amount)),React.createElement("td",{style:{fontSize:10}},dateFmt(po.release_due)),React.createElement("td",{style:{fontWeight:600}},fmtF(po.deposit_amount+po.release_amount))))))),
+          eTL.length>0&&React.createElement("div",{className:"card"},React.createElement("div",{className:"section-hdr",style:{color:C.danger,background:"#FCEDED"}},"Trade Finance"),React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,["Ref","PO","Outstanding","Settlement","Maturity","Rate"].map(h=>React.createElement("th",{key:h},h)))),React.createElement("tbody",null,eTL.map(l=>React.createElement("tr",{key:l.id},React.createElement("td",{style:{fontSize:10}},l.reference),React.createElement("td",{style:{color:C.midGrey}},l.po_ref),React.createElement("td",null,fmtF(l.outstanding)),React.createElement("td",{style:{fontWeight:600,color:C.danger}},fmtF(l.settlement)),React.createElement("td",{style:{fontSize:10}},dateFmt(l.maturity_date)),React.createElement("td",{style:{color:C.midGrey}},l.rate?(l.rate*100).toFixed(2)+"%":"\u2014"))))))
+        )})(),
+
+      tab==="settings"&&React.createElement("div",null,
+        React.createElement("div",{style:{fontSize:16,fontWeight:700,marginBottom:14}},"Bank Accounts"),
+        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:24}},(entities||[]).map(e=>React.createElement("div",{key:e.id,className:"card",style:{padding:16,borderTop:"4px solid "+C.entity[e.id],background:C.entityBg[e.id]}},React.createElement("div",{style:{fontSize:13,fontWeight:700,color:C.entity[e.id],marginBottom:10}},e.id+" \u00b7 "+e.currency),(e.bank_accounts||[]).map(ba=>React.createElement("div",{key:ba.id,style:{marginBottom:8}},React.createElement("div",{style:{fontSize:10,color:C.midGrey}},ba.name+(ba.type==='credit'?' (credit)':'')),React.createElement("div",{style:{fontSize:14,fontWeight:600}},fmtF(ba.balance))))))),
+        React.createElement("div",{style:{fontSize:16,fontWeight:700,marginBottom:14}},"Payroll & Opex"),
+        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14}},(entities||[]).map(e=>React.createElement("div",{key:e.id,className:"card",style:{padding:16}},React.createElement("div",{style:{fontSize:12,fontWeight:600,color:C.entity[e.id],marginBottom:8}},e.id+" \u00b7 "+(e.payroll?.frequency||"")),React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"Payroll: ",React.createElement("strong",{style:{color:C.steel}},fmtF(e.payroll?.amount))),React.createElement("div",{style:{fontSize:10,color:C.midGrey}},"Tax: ",React.createElement("strong",{style:{color:C.steel}},fmtF(e.payroll?.tax))),React.createElement("div",{style:{fontSize:10,color:C.midGrey,marginTop:4}},"Marketing: ",React.createElement("strong",{style:{color:C.steel}},fmtF(e.opex?.marketing))))))
+      )
+    ),
+    React.createElement("div",{style:{borderTop:"1px solid #E0DFDB",padding:"10px 28px",display:"flex",justifyContent:"space-between",fontSize:10,color:C.warmGrey,background:C.offWhite,marginTop:20}},
+      React.createElement("span",null,"Bureau CFO Dashboard \u00b7 HubSpot + Bureau Ops + Syft"),
+      React.createElement("span",null,ar.length+" AR \u00b7 "+ap.length+" AP \u00b7 "+stockPOs.length+" POs")
+    )
+  );
+}
+ReactDOM.render(React.createElement(App),document.getElementById('root'));
+</script>
+</body></html>
