@@ -1,6 +1,12 @@
-name = "bureau-cfo"
+name = "bureau-cfo-worker"
 main = "src/worker.js"
 compatibility_date = "2024-12-01"
+
+# Import HTML as text for frontend serving
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false
 
 [vars]
 HUBSPOT_ACCOUNT_ID = "44093193"
