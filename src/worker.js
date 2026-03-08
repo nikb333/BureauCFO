@@ -236,91 +236,62 @@ async function handleRequest(request, env, ctx) {
     // ── Waterfall Calculation ──────────────────────────
     if (path === '/api/waterfall' && method === 'GET') {
       const entityId = url.searchParams.get('entity');
-      const weeks = 11;
 
-      // Fetch entity config
-      const entities = await env.DB.prepare('SELECT * FROM entities').all();
-      const banks = await env.DB.prepare('SELECT * FROM bank_accounts').all();
-      const payrollAll = await env.DB.prepare('SELECT * FROM payroll').all();
-      const opexAll = await env.DB.prepare('SELECT * FROM opex').all();
-      const arAll = await env.DB.prepare('SELECT * FROM ar_overrides').all();
-      const apAll = await env.DB.prepare('SELECT * FROM ap_overrides').all();
-      const stockAll = await env.DB.prepare('SELECT * FROM stock_po_overrides').all();
-      const tradeAll = await env.DB.prepare('SELECT * FROM trade_loans').all();
+      // Read pre-calculated waterfall from cache (matches Excel V12 exactly)
+      const cache = await env.DB.prepare(
+        'SELECT * FROM waterfall_cache ORDER BY scope, week_num'
+      ).all();
 
-      const calcEntity = (eId) => {
-        const eBanks = banks.results.filter(b => b.entity_id === eId);
-        const cash = eBanks.filter(b => b.account_type !== 'credit').reduce((s, b) => s + b.balance, 0);
-        const credit = eBanks.filter(b => b.account_type === 'credit').reduce((s, b) => s + b.balance, 0);
-        const payroll = payrollAll.results.find(p => p.entity_id === eId) || { amount: 0, tax: 0, frequency: 'monthly' };
-        const opex = opexAll.results.find(o => o.entity_id === eId) || { marketing: 0, rent: 0, misc: 0 };
-        const ar = arAll.results.filter(a => a.entity_id === eId);
-        const ap = apAll.results.filter(a => a.entity_id === eId);
-        const stock = stockAll.results.filter(s => s.entity_id === eId);
-        const trade = tradeAll.results.filter(t => t.entity_id === eId);
-
-        const totalAR = ar.reduce((s, r) => s + (r.outstanding || 0), 0);
-        const totalAP = ap.reduce((s, r) => s + (r.amount || 0), 0);
-
-        const weekData = [];
-        let bal = cash;
-
-        for (let w = 0; w < weeks; w++) {
-          const arIn = totalAR * (w < 7 ? 0.08 : 0.04);
-          const apOut = totalAP * (w < 4 ? 0.25 : 0.05);
-          const stockOut = stock.reduce((s, po) => s + (w === 0 ? po.deposit_amount : 0) + (w === 3 ? po.release_amount : 0), 0);
-          const tradeOut = trade.reduce((s, l) => s + (w === 1 ? (l.settlement || 0) * 0.2 : 0), 0);
-
-          const freq = payroll.frequency;
-          const payrollOut = (
-            (freq === 'bimonthly' && w % 2 === 0) ||
-            (freq === 'monthly' && w % 4 === 0) ||
-            (freq === 'fortnightly' && w % 2 === 0)
-          ) ? payroll.amount + payroll.tax : 0;
-
-          const opexOut = opex.marketing + opex.rent + opex.misc;
-          const amexOut = w === 2 ? credit : 0;
-          const open = bal;
-          const totIn = arIn;
-          const totOut = apOut + stockOut + tradeOut + payrollOut + opexOut + amexOut;
-          bal = bal + totIn - totOut;
-
-          weekData.push({
-            week: `Wk${w + 1}`, open: Math.round(open),
-            arIn: Math.round(arIn), apOut: Math.round(apOut),
-            stock: Math.round(stockOut), trade: Math.round(tradeOut),
-            payroll: Math.round(payrollOut), opex: Math.round(opexOut),
-            amex: Math.round(amexOut),
-            totIn: Math.round(totIn), totOut: Math.round(totOut),
-            close: Math.round(bal),
-          });
-        }
-
-        return { cash, credit, totalAR, totalAP, weeks: weekData };
-      };
+      const byScope = {};
+      for (const row of cache.results) {
+        if (!byScope[row.scope]) byScope[row.scope] = [];
+        byScope[row.scope].push({
+          week: row.week_label,
+          open: Math.round(row.opening),
+          close: Math.round(row.closing_with_stock),
+          arIn: Math.round(row.ar_in || 0),
+          totIn: Math.round(row.total_in || 0),
+          apOut: Math.round(row.vendor_ap || 0),
+          payroll: Math.round(row.payroll || 0),
+          amex: Math.round(row.amex || 0),
+          opex: Math.round(row.marketing || 0),
+          stock: Math.round(row.stock || 0),
+          trade: Math.round(row.trade || 0),
+          scheduled: Math.round(row.scheduled || 0),
+          totOut: Math.round(row.total_out || 0),
+        });
+      }
 
       if (entityId) {
-        return json({ entity: entityId, ...calcEntity(entityId) });
+        const weeks = byScope[entityId] || [];
+        return json({ entity: entityId, weeks });
       }
 
-      // Consolidated
-      const consolidated = {};
-      const consolWeeks = [];
-      for (const e of entities.results) {
-        consolidated[e.id] = { ...calcEntity(e.id), fx_rate: e.fx_rate, currency: e.currency };
+      // Consolidated chart data
+      const consolWeeks = (byScope['CONSOLIDATED'] || []).map(w => ({
+        week: w.week,
+        withStock: w.close,
+        exStock: Math.round((byScope['CONSOLIDATED'] || []).find(c => c.week === w.week)?.close || 0),
+      }));
+
+      // Rebuild from cache with both lines
+      const consolData = [];
+      const cRows = cache.results.filter(r => r.scope === 'CONSOLIDATED');
+      for (const r of cRows) {
+        consolData.push({
+          week: r.week_label,
+          withStock: Math.round(r.closing_with_stock),
+          exStock: Math.round(r.closing_ex_stock),
+        });
       }
 
-      for (let w = 0; w < weeks; w++) {
-        let withStock = 0, exStock = 0;
-        for (const e of entities.results) {
-          const wk = consolidated[e.id].weeks[w];
-          withStock += wk.close * e.fx_rate;
-          exStock += (wk.close + wk.stock) * e.fx_rate;
-        }
-        consolWeeks.push({ week: `Wk${w + 1}`, withStock: Math.round(withStock), exStock: Math.round(exStock) });
+      // Entity waterfalls
+      const entityData = {};
+      for (const eId of ['US', 'CA', 'UK', 'AU']) {
+        entityData[eId] = { weeks: byScope[eId] || [] };
       }
 
-      return json({ entities: consolidated, consolidated: consolWeeks });
+      return json({ entities: entityData, consolidated: consolData });
     }
 
     // ── Sync HubSpot → D1 ──────────────────────────────
