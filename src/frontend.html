@@ -235,6 +235,7 @@ function App(){
   const [loading,setLoading]=us(true);
   const [error,setError]=us(null);
   const [saving,setSaving]=us(false);
+  const [arSub,setArSub]=us("summary");
 
   const load=()=>{
     Promise.all([
@@ -340,28 +341,105 @@ function App(){
       ),
 
       // ═══ AR CHASING ═══
-      tab==="ar"&&h("div",null,
-        h("div",{style:{display:"flex",gap:6,marginBottom:12}},
-          ["ALL","US","CA","UK","AU"].map(r=>h("button",{key:r,className:"pill"+(arRegion===r?" active":""),style:{"--c":r==="ALL"?C.steel:C.ent[r]},onClick:()=>setArRegion(r)},r==="ALL"?"All":r," (",(r==="ALL"?ar.filter(d=>d.outstanding>0).length:(arByE[r]||{}).c||0),")"))
-        ),
-        h("div",{className:"card"},
-          h("table",null,h("thead",null,h("tr",null,["Deal","Owner","Entity","Outstanding","Currency","Terms","Closed","Promised","Status"].map(x=>h("th",{key:x},x)))),
-            h("tbody",null,filtAR.map(d=>h("tr",{key:d.id},
-              h("td",{style:{fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},d.deal_name),
-              h("td",{style:{color:C.mid,fontSize:10}},d.owner),
-              h("td",null,h("span",{style:{color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
-              h("td",{style:{fontWeight:600}},fmtF(d.outstanding)),
-              h("td",{style:{color:C.mid}},d.currency),
-              h("td",{style:{color:C.mid,fontSize:10,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},d.payment_terms),
-              h("td",{style:{fontSize:10}},dateFmt(d.close_date)),
-              h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
-              h("td",null,h("span",{className:"badge "+(d.status||"current")},d.status||"current"))
-            )))),
-          h("div",{style:{padding:"8px 12px",borderTop:"1px solid #E8E7E3",display:"flex",justifyContent:"space-between",fontSize:11,background:"#FAFAF8"}},
-            h("span",{style:{color:C.mid}},filtAR.length+" deals"),
-            h("span",{style:{fontWeight:700,color:C.ok}},"Total: "+fmtF(Math.round(filtAR.reduce((s,d)=>s+(d.outstanding||0),0)))))
-        )
-      ),
+      tab==="ar"&&(()=>{
+        const unpaid=ar.filter(d=>d.outstanding>0);
+        const definite=unpaid.filter(d=>d.ar_bucket==='definite'||(!d.ar_bucket&&d.payment_terms&&d.payment_terms!=='Other'));
+        const proposed=unpaid.filter(d=>d.ar_bucket==='proposed'||(d.payment_terms==='Other'||!d.payment_terms));
+        const missingInv=unpaid.filter(d=>d.ar_bucket==='missing_invoice'||(!d.invoice_status&&d.outstanding>0));
+        const justClosed=unpaid.filter(d=>d.just_closed);
+        const isDirect=d=>['Inbound','Outbound','Return Customer','RFP/Tenders'].includes(d.sales_channel);
+        const isChannel=d=>['Dealers','Architect/Designer','Builder','Design & Build'].includes(d.sales_channel);
+        const fxR={US:1,CA:0.71,UK:1.33,AU:0.68,EUR:1.08};
+        const toUSD=(d)=>Math.round((d.outstanding||0)*(fxR[d.entity_id]||1));
+        const regionOrder=['AU','UK','US','CA'];
+
+        const DealRow=(d,showTermsNote)=>h("tr",{key:d.id},
+          h("td",{style:{fontWeight:500,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
+            d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{color:C.steel,textDecoration:"none"}},d.deal_name):d.deal_name),
+          h("td",{style:{color:C.mid,fontSize:10}},d.owner),
+          h("td",null,h("span",{style:{color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
+          h("td",{style:{color:C.mid}},d.currency),
+          h("td",{style:{fontSize:10}},fmtF(d.amount)),
+          h("td",{style:{fontSize:10,color:C.ok}},d.paid?fmtF(d.paid):"—"),
+          h("td",{style:{fontWeight:600}},fmtF(d.outstanding)),
+          h("td",{style:{fontWeight:600,color:C.mid,fontSize:10}},fmtF(toUSD(d))),
+          h("td",{style:{color:C.mid,fontSize:9,maxWidth:130}},
+            d.payment_terms==='Other'&&d.payment_terms_other?h("span",{title:d.payment_terms_other},"\u2139\ufe0f "+d.payment_terms_other.slice(0,30)):d.payment_terms||"—"),
+          h("td",{style:{fontSize:10}},dateFmt(d.close_date)),
+          h("td",{style:{fontSize:10,color:C.mid}},d.age_days||"—"),
+          h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
+          h("td",null,h("span",{className:"badge "+(d.overdue?"true":"false")},d.overdue?"Yes":"No")),
+          h("td",null,d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{fontSize:9,color:C.blue}},"\u2197"):null)
+        );
+
+        const DealTable=(deals,showTermsNote)=>{
+          const direct=deals.filter(isDirect).sort((a,b)=>b.outstanding-a.outstanding);
+          const channel=deals.filter(isChannel).sort((a,b)=>b.outstanding-a.outstanding);
+          const other=deals.filter(d=>!isDirect(d)&&!isChannel(d)).sort((a,b)=>b.outstanding-a.outstanding);
+          const Section=(title,items)=>{
+            const byRegion={};regionOrder.forEach(r=>{const rd=items.filter(d=>d.entity_id===r);if(rd.length)byRegion[r]=rd});
+            return h("div",null,
+              h("tr",null,h("td",{colSpan:14,style:{fontWeight:700,fontSize:12,color:C.steel,paddingTop:12,background:"#F5F4F0"}},title)),
+              Object.entries(byRegion).map(([r,rd])=>h(React.Fragment,{key:r},
+                h("tr",null,h("td",{colSpan:14,style:{fontSize:10,fontWeight:600,color:C.ent[r],paddingTop:6}},"── "+{AU:"AUS",UK:"UK",US:"USA",CA:"CAD"}[r]+" ("+rd.length+" deals) ──")),
+                rd.map(d=>DealRow(d,showTermsNote))
+              ))
+            )};
+          return h("table",null,
+            h("thead",null,h("tr",null,["Deal","Owner","Entity","Cur","Amount","Paid","Outstanding","USD","Terms","Closed","Age","Promised","Overdue",""].map(x=>h("th",{key:x},x)))),
+            h("tbody",null,
+              direct.length>0&&Section("DIRECT",direct),
+              channel.length>0&&Section("CHANNEL",channel),
+              other.length>0&&Section("OTHER",other)
+            )
+          );
+        };
+
+        const ARSUBS=[{id:"summary",l:"Summary"},{id:"definite",l:"Definite ("+definite.length+")"},{id:"proposed",l:"Proposed ("+proposed.length+")"},{id:"missing",l:"Missing Inv ("+missingInv.length+")"},{id:"justclosed",l:"Just Closed ("+justClosed.length+")"}];
+
+        return h("div",null,
+          h("div",{style:{display:"flex",gap:6,marginBottom:14}},
+            ARSUBS.map(s=>h("button",{key:s.id,className:"pill"+(arSub===s.id?" active":""),style:{"--c":C.steel},onClick:()=>setArSub(s.id)},s.l))),
+
+          arSub==="summary"&&h("div",null,
+            h("div",{className:"grid-4",style:{marginBottom:16}},
+              [{l:"Total AR Outstanding",v:fmtF(Math.round(unpaid.reduce((s,d)=>s+toUSD(d),0))),s:unpaid.length+" deals",c:C.steel},
+               {l:"Definite Chases",v:fmtF(Math.round(definite.reduce((s,d)=>s+toUSD(d),0))),s:definite.length+" deals",c:C.ok},
+               {l:"Proposed Chases",v:fmtF(Math.round(proposed.reduce((s,d)=>s+toUSD(d),0))),s:proposed.length+" deals",c:C.warn},
+               {l:"Missing Invoices",v:missingInv.length+" deals",s:"No invoice raised",c:C.bad}
+              ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))),
+            h("div",{className:"card",style:{marginBottom:16}},
+              h("div",{className:"card-hdr"},"Outstanding by Region — Definite Chases (USD)"),
+              h("table",null,h("thead",null,h("tr",null,["Region","Direct (USD)","Channel (USD)","Total (USD)"].map(x=>h("th",{key:x},x)))),
+                h("tbody",null,regionOrder.map(r=>{const rd=definite.filter(d=>d.entity_id===r);const dir=rd.filter(isDirect);const ch=rd.filter(isChannel);
+                  return h("tr",{key:r},h("td",{style:{fontWeight:600,color:C.ent[r]}},{AU:"AUS",UK:"UK",US:"USA",CA:"CAD"}[r]),
+                    h("td",null,fmtF(dir.reduce((s,d)=>s+toUSD(d),0))),h("td",null,ch.length?fmtF(ch.reduce((s,d)=>s+toUSD(d),0)):"—"),h("td",{style:{fontWeight:700}},fmtF(rd.reduce((s,d)=>s+toUSD(d),0))))}
+                )))
+            ),
+            h("div",{className:"card"},
+              h("div",{className:"card-hdr"},"Outstanding Leaderboard (USD)"),
+              h("table",null,h("thead",null,h("tr",null,["#","Owner","Outstanding (USD)","Deals"].map(x=>h("th",{key:x},x)))),
+                h("tbody",null,(()=>{const byOwner={};unpaid.forEach(d=>{if(!byOwner[d.owner])byOwner[d.owner]={usd:0,cnt:0};byOwner[d.owner].usd+=toUSD(d);byOwner[d.owner].cnt++});
+                  return Object.entries(byOwner).sort((a,b)=>b[1].usd-a[1].usd).map(([name,v],i)=>h("tr",{key:name},h("td",null,i+1),h("td",{style:{fontWeight:500}},name),h("td",{style:{fontWeight:600}},fmtF(v.usd)),h("td",null,v.cnt)))})()))
+            )
+          ),
+
+          arSub==="definite"&&h("div",{className:"card"},
+            h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},h("span",null,"Definite Chases — Payment Terms Confirmed"),h("span",null,fmtF(Math.round(definite.reduce((s,d)=>s+toUSD(d),0)))+" USD")),
+            DealTable(definite)),
+
+          arSub==="proposed"&&h("div",{className:"card"},
+            h("div",{className:"card-hdr",style:{color:C.warn,background:"#FEF3D6"}},h("span",null,"Proposed Chases — Terms TBC"),h("span",null,proposed.length+" deals")),
+            DealTable(proposed,true)),
+
+          arSub==="missing"&&h("div",{className:"card"},
+            h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},h("span",null,"Missing Invoices — No Invoice Raised"),h("span",null,missingInv.length+" deals")),
+            DealTable(missingInv)),
+
+          arSub==="justclosed"&&h("div",{className:"card"},
+            h("div",{className:"card-hdr",style:{color:C.blue,background:"#EDF2FE"}},h("span",null,"Just Closed — Last 3 Days"),h("span",null,justClosed.length+" deals")),
+            DealTable(justClosed))
+        )})(),
 
       // ═══ ENTITY CASHFLOW ═══
       tab==="entity"&&(()=>{const e=entMap[eTab],eAR=ar.filter(d=>d.entity_id===eTab&&d.outstanding>0),eAP=ap.filter(d=>d.entity_id===eTab),eWF=waterfall?.entities?.[eTab];
