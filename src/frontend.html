@@ -227,56 +227,63 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
         h("button",{className:"pill"+(mode==="hubspot"?" active":""),style:{"--c":C.blue,fontSize:10},onClick:()=>onSaveSettings({ar_collection_mode:"hubspot"})},"HubSpot Dates"))),
 
     mode==="aggregate"&&h("div",{style:{padding:12}},
-      h("div",{style:{fontSize:10,color:C.mid,marginBottom:8,padding:"6px 10px",background:"#FAFAF8",borderRadius:4,border:"1px solid #E8E7E3"}},"Each week\u2019s % is applied to the Syft AR total. Cumulative should approach ~70-100% to collect most AR."),
-      h("div",{style:{overflowX:"auto"}},h("table",{style:{fontSize:11}},
+      h("div",{style:{fontSize:10,color:C.mid,marginBottom:8,padding:"6px 10px",background:"#FAFAF8",borderRadius:4,border:"1px solid #E8E7E3"}},"Each week\u2019s % is applied to the Syft AR total. Cumulative should approach ~70\u2013100% to collect most AR."),
+      h("div",{style:{overflowX:"auto"}},h("table",{style:{fontSize:11,width:"100%"}},
         h("thead",null,h("tr",null,
-          h("th",{style:{width:70}},"Week"),
-          EIDs.map(e=>{const syft=syftRecon?.[e]||{};return h("th",{key:e,style:{textAlign:"center"}},
-            h("div",{style:{color:C.ent[e],fontWeight:700}},e),
-            h("div",{style:{fontSize:9,color:C.mid}},fmtC(syft.ar_total||0,e)+" total"))}))),
+          h("th",{style:{width:44,padding:"4px 6px"}},"Wk"),
+          EIDs.map(e=>{const syft=syftRecon?.[e]||{};return h("th",{key:e,style:{textAlign:"center",padding:"4px 6px"}},
+            h("span",{style:{color:C.ent[e],fontWeight:700}},e),
+            h("span",{style:{fontSize:9,color:C.mid,marginLeft:6}},fmtC(syft.ar_total||0,e)))}))),
         h("tbody",null,
-          Array.from({length:11},(_,i)=>{const byE={};(arRates||[]).forEach(r=>{if(!byE[r.entity_id])byE[r.entity_id]=[];byE[r.entity_id].push(r)});
-            return h("tr",{key:i},
-              h("td",{style:{fontWeight:600,fontSize:10,color:C.mid}},"Wk "+(i+1)),
+          Array.from({length:7},(_,i)=>{const byE={};(arRates||[]).forEach(r=>{if(!byE[r.entity_id])byE[r.entity_id]=[];byE[r.entity_id].push(r)});
+            return h("tr",{key:i,style:{lineHeight:"28px"}},
+              h("td",{style:{fontWeight:600,fontSize:10,color:C.mid,padding:"2px 6px"}},i+1),
               EIDs.map(e=>{const r=(byE[e]||[]).find(x=>x.week_num===i+1);const syft=syftRecon?.[e]||{};
                 const amt=Math.round((syft.ar_total||0)*(r?.rate||0));
-                return h("td",{key:e,style:{textAlign:"center"}},
-                  h("div",{style:{display:"flex",alignItems:"center",gap:4,justifyContent:"center"}},
+                return h("td",{key:e,style:{padding:"2px 6px"}},
+                  h("div",{style:{display:"flex",alignItems:"center",gap:6}},
                     h("input",{type:"number",defaultValue:r?Math.round(r.rate*100):0,step:5,min:0,max:100,
-                      style:{width:50,textAlign:"center",fontSize:11,padding:"3px 4px",border:"1px solid #E0DFDB",borderRadius:3},
+                      style:{width:44,textAlign:"center",fontSize:11,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3},
                       onBlur:ev=>onUpdateRate&&onUpdateRate(e,i+1,parseFloat(ev.target.value)/100)}),
-                    h("span",{style:{fontSize:8,color:C.mid}},"%")),
-                  amt>0&&h("div",{style:{fontSize:9,color:C.ok,marginTop:1}},fmtC(amt,e))
-                )}))
+                    h("span",{style:{fontSize:9,color:C.mid}},"%"),
+                    amt>0&&h("span",{style:{fontSize:9,color:C.ok,marginLeft:2}},fmtC(amt,e))
+                  ))}))
           }),
           h("tr",{style:{borderTop:"2px solid #213640",background:"#F5F4F0"}},
-            h("td",{style:{fontWeight:700,fontSize:10}},"\u03a3"),
+            h("td",{style:{fontWeight:700,fontSize:10,padding:"4px 6px"}},"\u03a3"),
             EIDs.map(e=>{const cumul=aggCheck(e);
-              return h("td",{key:e,style:{textAlign:"center",fontWeight:700,color:cumul>1.01?C.bad:C.ok}},fmtPct(cumul))}))
+              return h("td",{key:e,style:{textAlign:"center",fontWeight:700,padding:"4px 6px",color:cumul>1.01?C.bad:C.ok}},fmtPct(cumul))}))
         )
       ))),
 
     mode==="hubspot"&&h("div",{style:{padding:12}},
-      h("div",{style:{fontSize:10,color:C.mid,marginBottom:8,padding:"6px 10px",background:"#EDF2FE",borderRadius:4,border:"1px solid #D4E0F5"}},"AR is placed into weeks based on HubSpot Promised Date. Amounts without a date or past due are \u201COverflow\u201D — collected at the overflow % per week below."),
-      EIDs.map(eId=>{const wf=hubspotWaterfall(eId);const syft=syftRecon?.[eId]||{};
-        const overflows={};(arHubspotOverflow||[]).filter(r=>r.entity_id===eId).forEach(r=>overflows[r.week_num]=r.overflow_pct);
-        return h("div",{key:eId,style:{marginBottom:14}},
-          h("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:4}},
-            h("span",{style:{fontSize:11,fontWeight:600,color:C.ent[eId]}},eId+" — Syft AR: "+fmtC(syft.ar_total||0,eId)),
-            h("span",{style:{fontSize:10}},
-              h("span",{style:{color:C.ok}},"Dated: "+fmtC(wf.assigned,eId)),
-              " \u00b7 ",
-              h("span",{style:{color:C.warn}},"Overflow: "+fmtC(wf.unassigned,eId)))),
-          h("div",{className:"input-grid"},
-            h("div",{className:"hdr"},"Week"),
-            Array.from({length:11},(_,i)=>h("div",{key:i,className:"hdr",style:{justifyContent:"center"}},i+1)),
-            h("div",{className:"hdr"},"Dated"),
-            Array.from({length:11},(_,i)=>h("div",{key:i,style:{fontSize:9,textAlign:"center",color:wf.wks[i]?C.ok:C.warm}},wf.wks[i]?fmtC(wf.wks[i],eId):"—")),
-            h("div",{className:"hdr",style:{color:C.warn}},"Overflow %"),
-            Array.from({length:11},(_,i)=>h("div",{key:i},h("input",{type:"number",defaultValue:Math.round((overflows[i+1]||0)*100),step:5,min:0,max:100,
-              onBlur:e=>onUpdateOverflow&&onUpdateOverflow(eId,i+1,parseFloat(e.target.value)/100)})))
-          )
-        )}))
+      h("div",{style:{fontSize:10,color:C.mid,marginBottom:8,padding:"6px 10px",background:"#EDF2FE",borderRadius:4,border:"1px solid #D4E0F5"}},"AR is placed into weeks based on HubSpot Promised Date. Amounts without a date or past due are \u201COverflow\u201D \u2014 collected at the overflow % per week below."),
+      h("div",{style:{overflowX:"auto"}},h("table",{style:{fontSize:11,width:"100%"}},
+        h("thead",null,h("tr",null,
+          h("th",{style:{width:44,padding:"4px 6px"}},"Wk"),
+          EIDs.map(eId=>{const syft=syftRecon?.[eId]||{};const wf=hubspotWaterfall(eId);
+            return h("th",{key:eId,style:{padding:"4px 6px"}},
+              h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+                h("span",{style:{color:C.ent[eId],fontWeight:700}},eId),
+                h("span",{style:{fontSize:9,color:C.mid}},fmtC(syft.ar_total||0,eId))),
+              h("div",{style:{display:"flex",justifyContent:"space-between",fontSize:8,marginTop:2}},
+                h("span",{style:{color:C.ok}},"Dated: "+fmtC(wf.assigned,eId)),
+                h("span",{style:{color:C.warn}},"Overflow: "+fmtC(wf.unassigned,eId))))}))),
+        h("tbody",null,
+          Array.from({length:7},(_,i)=>h("tr",{key:i,style:{lineHeight:"28px"}},
+            h("td",{style:{fontWeight:600,fontSize:10,color:C.mid,padding:"2px 6px"}},i+1),
+            EIDs.map(eId=>{const wf=hubspotWaterfall(eId);
+              const overflows={};(arHubspotOverflow||[]).filter(r=>r.entity_id===eId).forEach(r=>overflows[r.week_num]=r.overflow_pct);
+              return h("td",{key:eId,style:{padding:"2px 6px"}},
+                h("div",{style:{display:"flex",alignItems:"center",gap:6}},
+                  wf.wks[i]?h("span",{style:{fontSize:9,color:C.ok,minWidth:60}},fmtC(wf.wks[i],eId)):h("span",{style:{fontSize:9,color:C.warm,minWidth:60}},"\u2014"),
+                  h("span",{style:{fontSize:8,color:C.warn,whiteSpace:"nowrap"}},"Ovfl:"),
+                  h("input",{type:"number",defaultValue:Math.round((overflows[i+1]||0)*100),step:5,min:0,max:100,
+                    style:{width:44,textAlign:"center",fontSize:11,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3},
+                    onBlur:e=>onUpdateOverflow&&onUpdateOverflow(eId,i+1,parseFloat(e.target.value)/100)}),
+                  h("span",{style:{fontSize:9,color:C.mid}},"%")
+                ))}))))
+      )))
   );
 }
 
