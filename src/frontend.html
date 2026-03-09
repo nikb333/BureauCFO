@@ -222,8 +222,7 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
       if(!placed){/* beyond 11 weeks */}
     });
     const overdueTotal=overdue.reduce((s,d)=>s+(d.outstanding||0),0)+undated.reduce((s,d)=>s+(d.outstanding||0),0);
-    const unassigned=totalAR-assigned;
-    return {wks,wkDeals,totalAR,assigned,unassigned,overdue,undated,overdueTotal};
+    return {wks,wkDeals,totalAR,assigned,overdue,undated,overdueTotal};
   };
 
   // Aggregate mode: total check
@@ -272,7 +271,7 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
     mode==="hubspot"&&(()=>{
       const wfByEntity={};EIDs.forEach(eId=>wfByEntity[eId]=hubspotWaterfall(eId));
       const toUSD=(amt,eId)=>Math.round((amt||0)*(fxR[eId]||1));
-      const totalOverdueUSD=EIDs.reduce((s,eId)=>s+toUSD(wfByEntity[eId].unassigned,eId),0);
+      const totalOverdueUSD=EIDs.reduce((s,eId)=>s+toUSD(wfByEntity[eId].overdueTotal,eId),0);
       const totalDatedUSD=EIDs.reduce((s,eId)=>s+toUSD(wfByEntity[eId].assigned,eId),0);
       const totalARUSD=EIDs.reduce((s,eId)=>s+toUSD(wfByEntity[eId].totalAR,eId),0);
 
@@ -295,7 +294,7 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
                 h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4}},
                   h("span",{style:{fontSize:11,fontWeight:700,color:C.ent[eId]}},eId),
                   h("span",{style:{fontSize:9,color:C.mid}},cnt+" deal"+(cnt!==1?"s":""))),
-                h("div",{style:{fontSize:16,fontWeight:700,color:C.steel}},fmtC(wf.unassigned,eId)),
+                h("div",{style:{fontSize:16,fontWeight:700,color:C.steel}},fmtC(wf.overdueTotal,eId)),
                 h("div",{style:{fontSize:9,color:C.mid,marginTop:2}},"of "+fmtC(wf.totalAR,eId)+" total AR"))}))),
 
         // ── SECTION 2: Deal List Accordion ──
@@ -312,7 +311,7 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
                   h("span",{style:{fontSize:10,fontWeight:700,color:C.ent[eId]}},eId),
                   h("span",{style:{fontSize:10,color:C.mid}},deals.length+" deal"+(deals.length!==1?"s":""))),
                 h("div",{style:{display:"flex",alignItems:"center",gap:10}},
-                  h("span",{style:{fontSize:12,fontWeight:700,color:C.steel}},fmtC(wf.unassigned,eId)),
+                  h("span",{style:{fontSize:12,fontWeight:700,color:C.steel}},fmtC(wf.overdueTotal,eId)),
                   h("span",{style:{fontSize:12,color:C.mid,transition:"transform 0.2s",transform:isOpen?"rotate(180deg)":"rotate(0)"}},"\u25BC"))),
               isOpen&&h("div",{style:{maxHeight:280,overflowY:"auto"}},
                 h("table",{style:{width:"100%",fontSize:10,borderCollapse:"collapse"}},
@@ -342,7 +341,7 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
               h("th",{style:{padding:"6px 8px",textAlign:"left",width:90,fontSize:10}},"Week"),
               EIDs.map(eId=>h("th",{key:eId,style:{padding:"6px 8px",textAlign:"center"}},
                 h("span",{style:{color:C.ent[eId],fontWeight:700}},eId),
-                h("div",{style:{fontSize:8,color:C.mid,fontWeight:400}},"Overdue: "+fmtC(wfByEntity[eId].unassigned,eId)))))),
+                h("div",{style:{fontSize:8,color:C.mid,fontWeight:400}},"Overdue: "+fmtC(wfByEntity[eId].overdueTotal,eId)))))),
             h("tbody",null,
               Array.from({length:4},(_,i)=>{
                 return h("tr",{key:i,style:{borderTop:"1px solid #F0EFEB"}},
@@ -352,7 +351,7 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
                   EIDs.map(eId=>{
                     const overflows={};(arHubspotOverflow||[]).filter(r=>r.entity_id===eId).forEach(r=>overflows[r.week_num]=r.overflow_pct);
                     const rate=overflows[i+1]||0;
-                    const amt=Math.round(wfByEntity[eId].unassigned*rate);
+                    const amt=Math.round(wfByEntity[eId].overdueTotal*rate);
                     return h("td",{key:eId,style:{padding:"6px 8px",textAlign:"center"}},
                       h("div",{style:{display:"flex",alignItems:"center",justifyContent:"center",gap:4}},
                         h("input",{type:"number",defaultValue:Math.round(rate*100),step:5,min:0,max:100,
@@ -366,8 +365,8 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
                 EIDs.map(eId=>{
                   const overflows={};(arHubspotOverflow||[]).filter(r=>r.entity_id===eId).forEach(r=>overflows[r.week_num]=r.overflow_pct);
                   const totalPct=[1,2,3,4].reduce((s,w)=>s+(overflows[w]||0),0);
-                  const totalAmt=Math.round(wfByEntity[eId].unassigned*totalPct);
-                  const remaining=wfByEntity[eId].unassigned-totalAmt;
+                  const totalAmt=Math.round(wfByEntity[eId].overdueTotal*totalPct);
+                  const remaining=wfByEntity[eId].overdueTotal-totalAmt;
                   return h("td",{key:eId,style:{padding:"6px 8px",textAlign:"center"}},
                     h("div",{style:{fontWeight:700,color:totalPct>1?C.bad:C.ok}},fmtPct(totalPct)),
                     h("div",{style:{fontSize:9,color:C.ok}},fmtC(totalAmt,eId)),
