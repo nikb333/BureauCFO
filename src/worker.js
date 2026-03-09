@@ -18,7 +18,7 @@ function json(data, status = 200) {
 async function loadAllInputs(DB) {
   const [entities, banks, arRates, apRates, newOrders, amex, config,
     arDeals, apVendors, stockPOs, tradeLoans, scheduled, syftRecon,
-    scenarios, overrides, settings] = await Promise.all([
+    scenarios, overrides, settings, arHubspotOverflow] = await Promise.all([
     DB.prepare('SELECT * FROM entities').all(),
     DB.prepare('SELECT * FROM bank_accounts').all(),
     DB.prepare('SELECT * FROM input_ar_collection ORDER BY entity_id, week_num').all(),
@@ -35,11 +35,13 @@ async function loadAllInputs(DB) {
     DB.prepare('SELECT * FROM scenarios WHERE is_active = 1').all(),
     DB.prepare('SELECT * FROM scenario_overrides').all(),
     DB.prepare('SELECT * FROM settings').all(),
+    DB.prepare('SELECT * FROM input_ar_hubspot_overflow ORDER BY entity_id, week_num').all(),
   ]);
   const byEntity = (rows, f='entity_id') => { const m={}; rows.forEach(r=>{const k=r[f]; if(!m[k])m[k]=[]; m[k].push(r)}); return m; };
   return {
     entities: entities.results, banks: byEntity(banks.results),
     arRates: byEntity(arRates.results), apRates: byEntity(apRates.results),
+    arHubspotOverflow: byEntity(arHubspotOverflow.results),
     newOrders: Object.fromEntries(newOrders.results.map(r=>[r.entity_id,r])),
     amex: Object.fromEntries(amex.results.map(r=>[r.entity_id,r])),
     config: Object.fromEntries(config.results.map(r=>[r.entity_id,r])),
@@ -73,6 +75,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const weeks=getWeekDates(startDate,N);
   const cfg=inputs.config[eId]||{}, ent=inputs.entities.find(e=>e.id===eId)||{};
   const fxRate=ent.fx_rate||1;
+  const arMode=inputs.settings.ar_collection_mode||'aggregate';
 
   // Opening balance
   const eBanks=inputs.banks[eId]||[];
@@ -84,6 +87,55 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const apTotal=syft.ap_total||(inputs.apVendors[eId]||[]).reduce((s,v)=>s+v.amount,0);
   const arRates=(inputs.arRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
   const apRates=(inputs.apRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
+
+  // HubSpot mode: bucket deals by payment schedule (terms-aware with 10-day lag)
+  let hsWkAmounts=null, hsOverdueTotal=0, hsArDealsByWeek=null;
+  const PAY_DELAY=10; // days lag after milestone
+  function addDaysW(ds,days){if(!ds)return null;const d=new Date(ds+'T00:00:00Z');d.setDate(d.getDate()+days);return d}
+  function paySchedule(d){
+    const t=d.payment_terms||'',amt=d.outstanding||0,prom=d.promised_date,inst=d.install_date;
+    if(t.includes('50/50')) return [{pct:50,date:prom?addDaysW(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDaysW(inst,PAY_DELAY):null,label:'50% install'}];
+    if(t.includes('Due on Confirmation')) return [{pct:100,date:prom?addDaysW(prom,PAY_DELAY):null,label:'Due on confirmation'}];
+    if(t.includes('Net 30 from install')) return [{pct:100,date:inst?addDaysW(inst,30):null,label:'Net 30 install'}];
+    if(t.includes('Net 30')) return [{pct:100,date:prom?addDaysW(prom,30):null,label:'Net 30'}];
+    if(t.includes('Net 60')) return [{pct:100,date:prom?addDaysW(prom,60):null,label:'Net 60'}];
+    return [{pct:100,date:prom?addDaysW(prom,PAY_DELAY):null,label:t||'Standard'}];
+  }
+  if(arMode==='hubspot'){
+    const deals=(inputs.arDeals[eId]||[]).filter(d=>d.outstanding>0);
+    const wk0Start=weeks[0].start;
+    const wkAmts=Array(N).fill(0);
+    const wkDeals=Array.from({length:N},()=>[]);
+    const overdue=[];
+    deals.forEach(d=>{
+      const sched=paySchedule(d);
+      let placed=false;
+      sched.forEach(s=>{
+        const payAmt=Math.round((d.outstanding||0)*s.pct/100);
+        if(!s.date){overdue.push({deal_name:d.deal_name,amount:payAmt,label:s.label});return}
+        const payDate=s.date;
+        if(payDate<wk0Start){overdue.push({deal_name:d.deal_name,amount:payAmt,label:s.label});return}
+        for(let i=0;i<N;i++){
+          if(payDate>=weeks[i].start&&payDate<=weeks[i].end){
+            wkAmts[i]+=payAmt;
+            wkDeals[i].push({name:d.deal_name+(sched.length>1?' ('+s.label+')':''),amount:payAmt,ticket:d.has_open_ticket?1:0,ticketSubject:d.ticket_subject||''});
+            placed=true;break;
+          }
+        }
+      });
+    });
+    hsOverdueTotal=overdue.reduce((s,d)=>s+(d.amount||0),0);
+    const overflowRates=(inputs.arHubspotOverflow[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
+    hsWkAmounts=wkAmts.map((dated,i)=>{
+      const ofRate=overflowRates.find(r=>r.week_num===i+1)?.overflow_pct||0;
+      return dated+hsOverdueTotal*ofRate;
+    });
+    hsArDealsByWeek=wkDeals;
+  }
+
+  // AP deal breakdown per week for tooltips
+  const apVendorsByWeek=Array.from({length:N},()=>[]);
+  const apVendorList=inputs.apVendors[eId]||[];
 
   // New orders
   const no=inputs.newOrders[eId]||{monthly_revenue_local:0,delay_weeks:4,ramp_weeks:2,cogs_rate:0.075,replacement_rate:0.2};
@@ -115,12 +167,17 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     const wk=weeks[w], open=bal;
 
     // INFLOWS
-    const arRate=arRates[w]?.rate||0;
-    let overdueAR=arTotal*arRate;
+    let overdueAR;
+    if(arMode==='hubspot'&&hsWkAmounts){
+      overdueAR=hsWkAmounts[w]||0;
+    } else {
+      const arRate=arRates[w]?.rate||0;
+      overdueAR=arTotal*arRate;
+    }
     if(arDelayPct>0&&arDelayWks>0){ overdueAR-=overdueAR*arDelayPct; }
     if(arDelayPct>0&&arDelayWks>0&&w>=arDelayWks){
-      const srcRate=arRates[w-arDelayWks]?.rate||0;
-      overdueAR+=arTotal*srcRate*arDelayPct;
+      const srcWkAR=arMode==='hubspot'&&hsWkAmounts?(hsWkAmounts[w-arDelayWks]||0):(arTotal*(arRates[w-arDelayWks]?.rate||0));
+      overdueAR+=srcWkAR*arDelayPct;
     }
 
     let newOrdersCash=0;
@@ -132,7 +189,15 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     const totIn=overdueAR+newOrdersCash;
 
     // OUTFLOWS
-    const vendorAP=apTotal*(apRates[w]?.rate||0);
+    const apRate=apRates[w]?.rate||0;
+    const vendorAP=apTotal*apRate;
+    // Track AP vendor breakdown for this week's tooltip
+    if(apRate>0){
+      apVendorList.forEach(v=>{
+        const vAmt=Math.round((v.amount||0)*apRate);
+        if(vAmt>0) apVendorsByWeek[w].push({name:v.vendor_name,amount:vAmt});
+      });
+    }
 
     const freq=cfg.payroll_frequency||'bimonthly';
     let payroll=0;
@@ -155,22 +220,25 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     }
 
     let tradeOut=0;
-    for(const l of tradeLns){ if(dateInWeek(l.maturity_date,wk.start,wk.end)) tradeOut+=l.settlement||0; }
+    for(const l of tradeLns){ if(dateInWeek(l.maturity_date,wk.start,wk.end)) tradeOut+=l.settlement||Math.round((l.outstanding||0)*(1+(l.rate||0)/2)); }
 
     let scheduledOut=0;
+    const scheduledDetails=[];
     for(const sp of schedPmts){
+      let spAmt=0;
       if(sp.frequency==='monthly'){
         const dom=sp.day_of_month||1;
         for(let d=new Date(wk.start);d<=wk.end;d.setDate(d.getDate()+1)){
           if(d.getDate()===dom){
             const ss=sp.start_date?new Date(sp.start_date):new Date('2020-01-01');
             const se=sp.end_date?new Date(sp.end_date):new Date('2030-12-31');
-            if(d>=ss&&d<=se) scheduledOut+=sp.amount_local||0;
+            if(d>=ss&&d<=se) spAmt+=sp.amount_local||0;
           }
         }
       } else if(sp.frequency==='one-off'){
-        if(dateInWeek(sp.start_date,wk.start,wk.end)) scheduledOut+=sp.amount_local||0;
+        if(dateInWeek(sp.start_date,wk.start,wk.end)) spAmt=sp.amount_local||0;
       }
+      if(spAmt>0){scheduledOut+=spAmt;scheduledDetails.push({name:sp.description||'Scheduled',amount:Math.round(spAmt)})}
     }
 
     const rent=(cfg.rent_monthly||0)/4.33; // monthly to weekly
@@ -180,6 +248,15 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     const totOut=vendorAP+payroll+marketing+amexPayoff+stockOut+tradeOut+scheduledOut+rent+misc+installCosts+stockRepl;
     bal=open+totIn-totOut;
 
+    // AR tooltip: deal breakdown for this week
+    let arDetails=[];
+    if(arMode==='hubspot'&&hsArDealsByWeek){
+      const dated=hsArDealsByWeek[w]||[];
+      if(dated.length) arDetails=arDetails.concat(dated.map(d=>({name:d.name,amount:Math.round(d.amount),ticket:d.ticket||0,ticketSubject:d.ticketSubject||''})));
+      const ofRate=(inputs.arHubspotOverflow[eId]||[]).find(r=>r.week_num===w+1)?.overflow_pct||0;
+      if(ofRate>0&&hsOverdueTotal>0) arDetails.push({name:'Overdue ('+Math.round(ofRate*100)+'%)',amount:Math.round(hsOverdueTotal*ofRate)});
+    }
+
     weekData.push({
       week:wk.label, weekStart:wk.start.toISOString().slice(0,10), open:Math.round(open),
       arIn:Math.round(overdueAR), newOrders:Math.round(newOrdersCash), totIn:Math.round(totIn),
@@ -188,6 +265,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
       scheduled:Math.round(scheduledOut), rent:Math.round(rent), misc:Math.round(misc),
       diCogs:Math.round(installCosts), invRepl:Math.round(stockRepl), totOut:Math.round(totOut),
       close:Math.round(bal), closeExStock:Math.round(bal+stockOut),
+      arDetails, apDetails:apVendorsByWeek[w]||[], scheduledDetails,
     });
   }
   return { entity:eId, currency:ent.currency||'USD', fxRate, openingCash, arTotal, apTotal, weeks:weekData };
@@ -390,6 +468,81 @@ export default {
         const eId=path.split('/').pop(), body=await request.json();
         await env.DB.prepare('UPDATE entities SET fx_rate=? WHERE id=?').bind(body.fx_rate,eId).run();
         return json({success:true});
+      }
+
+      // Seed trade finance from Excel data
+      if(path==='/api/seed-trade-finance'&&method==='POST'){
+        await env.DB.prepare('DELETE FROM trade_loans').run();
+        const loans=[
+          {ref:'EFL20262388628',po:'BUR-AUS-250710-0',out:7285.62,mat:'2026-03-12',rate:0.0562},
+          {ref:'EFL20262388629',po:'BUR2505-AU',out:20607.37,mat:'2026-03-12',rate:0.0562},
+          {ref:'EFL20262388632',po:'HA138',out:28399.00,mat:'2026-03-13',rate:0.0562},
+          {ref:'EFL20262388634',po:'HA147',out:26645.56,mat:'2026-03-27',rate:0.0562},
+          {ref:'EFL20262388633',po:'AU108EB',out:27350.93,mat:'2026-03-27',rate:0.0562},
+          {ref:'EFL20262388585',po:'AU099EB',out:43581.65,mat:'2026-03-27',rate:0.0562},
+          {ref:'EFL20262388588',po:'HA159',out:47206.31,mat:'2026-04-10',rate:0.0575},
+          {ref:'EFL20262388596',po:'HA138',out:66142.84,mat:'2026-04-10',rate:0.0575},
+          {ref:'EFL20262388610',po:'AU108EB',out:56272.81,mat:'2026-04-24',rate:0.0575},
+          {ref:'EFL20262388611',po:'HA140',out:41129.03,mat:'2026-04-24',rate:0.0575},
+          {ref:'EFL20262388598',po:'HA164',out:51513.61,mat:'2026-04-24',rate:0.0575},
+          {ref:'EFL20262388616',po:'AU123EB',out:28744.18,mat:'2026-05-07',rate:0.0588},
+          {ref:'EFL20262388617',po:'CA092EB',out:131819.97,mat:'2026-05-08',rate:0.0588},
+          {ref:'EFL20262388630',po:'HA147',out:63016.95,mat:'2026-05-08',rate:0.0588},
+          {ref:'EFL20262388631',po:'GB038EB',out:95247.90,mat:'2026-05-15',rate:0.0588},
+          {ref:'EFL20262388635',po:'HA148',out:58506.34,mat:'2026-05-21',rate:0.0588},
+          {ref:'EFL20262388636',po:'20251010CA094EB',out:52361.70,mat:'2026-05-22',rate:0.0588},
+          {ref:'EFL20262388641',po:'HA159',out:107603.73,mat:'2026-05-22',rate:0.0588},
+          {ref:'EFL20262404093',po:'',out:283314.32,mat:'2026-07-03',rate:0.0603},
+          {ref:'BUREAU20262242586',po:'',out:255631.69,mat:'2026-07-08',rate:0.0603},
+          {ref:'BUREAU20262246109',po:'',out:21040.02,mat:'2026-07-15',rate:0.0591},
+          {ref:'BUREAU20262049531',po:'AU139EB -PO188-',out:19445.02,mat:'2026-07-22',rate:0.0588},
+          {ref:'BUREAU20262049542',po:'PO183 PO194',out:41066.81,mat:'2026-07-22',rate:0.0588},
+          {ref:'BUREAU20262049541',po:'PI NO HA179',out:15996.44,mat:'2026-07-22',rate:0.0588},
+          {ref:'BUREAU20262054430',po:'',out:395784.04,mat:'2026-07-31',rate:0.0599},
+          {ref:'BUREAU20262056345',po:'',out:211437.73,mat:'2026-08-05',rate:0.0588},
+        ];
+        for(const l of loans){
+          const settlement=Math.round(l.out*(1+l.rate/2));
+          await env.DB.prepare('INSERT INTO trade_loans(entity_id,reference,po_ref,outstanding,settlement,maturity_date,rate) VALUES(?,?,?,?,?,?,?)')
+            .bind('AU',l.ref,l.po,l.out,settlement,l.mat,l.rate).run();
+        }
+        return json({success:true,count:loans.length});
+      }
+
+      // Migrations
+      if(path==='/api/migrate'&&method==='POST'){
+        const migrations=[
+          "ALTER TABLE ar_overrides ADD COLUMN has_open_ticket INTEGER DEFAULT 0",
+          "ALTER TABLE ar_overrides ADD COLUMN ticket_subject TEXT",
+          "ALTER TABLE ar_overrides ADD COLUMN ticket_status TEXT",
+          "ALTER TABLE ar_overrides ADD COLUMN ticket_priority TEXT",
+          "ALTER TABLE ar_overrides ADD COLUMN ticket_category TEXT",
+        ];
+        const results=[];
+        for(const sql of migrations){
+          try{await env.DB.prepare(sql).run();results.push({sql,status:'ok'})}
+          catch(e){results.push({sql,status:'skipped',error:e.message})}
+        }
+        return json({results});
+      }
+
+      // Trade loan individual operations
+      if(path.startsWith('/api/trade-loans/')&&method==='DELETE'){
+        const id=parseInt(path.split('/').pop());
+        await env.DB.prepare('DELETE FROM trade_loans WHERE id=?').bind(id).run();
+        return json({success:true});
+      }
+      if(path.startsWith('/api/trade-loans/')&&method==='PUT'){
+        const id=parseInt(path.split('/').pop()), body=await request.json();
+        await env.DB.prepare('UPDATE trade_loans SET reference=?,po_ref=?,outstanding=?,settlement=?,maturity_date=?,rate=?,entity_id=? WHERE id=?')
+          .bind(body.reference,body.po_ref,body.outstanding,body.settlement,body.maturity_date,body.rate,body.entity_id||'AU',id).run();
+        return json({success:true});
+      }
+      if(path==='/api/trade-loans'&&method==='POST'){
+        const body=await request.json();
+        const r=await env.DB.prepare('INSERT INTO trade_loans(entity_id,reference,po_ref,outstanding,settlement,maturity_date,rate) VALUES(?,?,?,?,?,?,?)')
+          .bind(body.entity_id||'AU',body.reference||'',body.po_ref||'',body.outstanding||0,body.settlement||0,body.maturity_date||'',body.rate||0).run();
+        return json({success:true,id:r.meta.last_row_id});
       }
 
       return json({error:`Not found: ${path}`},404);
