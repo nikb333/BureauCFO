@@ -88,8 +88,19 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const arRates=(inputs.arRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
   const apRates=(inputs.apRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
 
-  // HubSpot mode: bucket deals by promised_date + overflow
+  // HubSpot mode: bucket deals by payment schedule (terms-aware with 10-day lag)
   let hsWkAmounts=null, hsOverdueTotal=0, hsArDealsByWeek=null;
+  const PAY_DELAY=10; // days lag after milestone
+  function addDaysW(ds,days){if(!ds)return null;const d=new Date(ds+'T00:00:00Z');d.setDate(d.getDate()+days);return d}
+  function paySchedule(d){
+    const t=d.payment_terms||'',amt=d.outstanding||0,prom=d.promised_date,inst=d.install_date;
+    if(t.includes('50/50')) return [{pct:50,date:prom?addDaysW(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDaysW(inst,PAY_DELAY):null,label:'50% install'}];
+    if(t.includes('Due on Confirmation')) return [{pct:100,date:prom?addDaysW(prom,PAY_DELAY):null,label:'Due on confirmation'}];
+    if(t.includes('Net 30 from install')) return [{pct:100,date:inst?addDaysW(inst,30):null,label:'Net 30 install'}];
+    if(t.includes('Net 30')) return [{pct:100,date:prom?addDaysW(prom,30):null,label:'Net 30'}];
+    if(t.includes('Net 60')) return [{pct:100,date:prom?addDaysW(prom,60):null,label:'Net 60'}];
+    return [{pct:100,date:prom?addDaysW(prom,PAY_DELAY):null,label:t||'Standard'}];
+  }
   if(arMode==='hubspot'){
     const deals=(inputs.arDeals[eId]||[]).filter(d=>d.outstanding>0);
     const wk0Start=weeks[0].start;
@@ -97,14 +108,23 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     const wkDeals=Array.from({length:N},()=>[]);
     const overdue=[];
     deals.forEach(d=>{
-      if(!d.promised_date){overdue.push(d);return}
-      const pd=new Date(d.promised_date+'T00:00:00Z');
-      if(pd<wk0Start){overdue.push(d);return}
-      for(let i=0;i<N;i++){
-        if(pd>=weeks[i].start&&pd<=weeks[i].end){wkAmts[i]+=(d.outstanding||0);wkDeals[i].push({name:d.deal_name,amount:d.outstanding});break}
-      }
+      const sched=paySchedule(d);
+      let placed=false;
+      sched.forEach(s=>{
+        const payAmt=Math.round((d.outstanding||0)*s.pct/100);
+        if(!s.date){overdue.push({deal_name:d.deal_name,amount:payAmt,label:s.label});return}
+        const payDate=s.date;
+        if(payDate<wk0Start){overdue.push({deal_name:d.deal_name,amount:payAmt,label:s.label});return}
+        for(let i=0;i<N;i++){
+          if(payDate>=weeks[i].start&&payDate<=weeks[i].end){
+            wkAmts[i]+=payAmt;
+            wkDeals[i].push({name:d.deal_name+(sched.length>1?' ('+s.label+')':''),amount:payAmt});
+            placed=true;break;
+          }
+        }
+      });
     });
-    hsOverdueTotal=overdue.reduce((s,d)=>s+(d.outstanding||0),0);
+    hsOverdueTotal=overdue.reduce((s,d)=>s+(d.amount||0),0);
     const overflowRates=(inputs.arHubspotOverflow[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
     hsWkAmounts=wkAmts.map((dated,i)=>{
       const ofRate=overflowRates.find(r=>r.week_num===i+1)?.overflow_pct||0;

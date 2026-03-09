@@ -98,6 +98,7 @@ function Chart({data,scenarioData,height:H}){
 const CURR={US:{s:'$',c:'USD',fx:1},CA:{s:'C$',c:'CAD',fx:0.71},UK:{s:'£',c:'GBP',fx:1.33},AU:{s:'A$',c:'AUD',fx:0.68}};
 const fmtC=(n,eId)=>{const c=CURR[eId]||CURR.US;return c.s+Math.abs(n||0).toLocaleString('en-US',{maximumFractionDigits:0})};
 const fmtPct=(n)=>Math.round((n||0)*100)+'%';
+const addDays=(dateStr,days)=>{if(!dateStr)return null;const d=new Date(dateStr+'T00:00:00');d.setDate(d.getDate()+days);return d.toISOString().slice(0,10)};
 
 // Currency input: shows formatted, edits raw
 function CInput({value,entity,onChange,style:s}){
@@ -202,7 +203,18 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
   const weekLabel=(i)=>{const d=weekStarts[i];return d?d.toLocaleDateString('en-GB',{day:'numeric',month:'short'}):''};
   const [openAccordion,setOpenAccordion]=us(null);
 
-  // HubSpot waterfall: bucket deals by promised_date into weeks
+  // Payment schedule helper (mirrors worker.js logic)
+  const PAY_DELAY=10;
+  const paySchedule=(d)=>{
+    const t=d.payment_terms||'',prom=d.promised_date,inst=d.install_date;
+    if(t.includes('50/50')) return [{pct:50,date:prom?addDays(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDays(inst,PAY_DELAY):null,label:'50% install'}];
+    if(t.includes('Due on Confirmation')) return [{pct:100,date:prom?addDays(prom,PAY_DELAY):null,label:'Due on confirmation'}];
+    if(t.includes('Net 30 from install')) return [{pct:100,date:inst?addDays(inst,30):null,label:'Net 30 install'}];
+    if(t.includes('Net 30')) return [{pct:100,date:prom?addDays(prom,30):null,label:'Net 30'}];
+    if(t.includes('Net 60')) return [{pct:100,date:prom?addDays(prom,60):null,label:'Net 60'}];
+    return [{pct:100,date:prom?addDays(prom,PAY_DELAY):null,label:t||'Standard'}];
+  };
+  // HubSpot waterfall: bucket deals by payment schedule into weeks
   const hubspotWaterfall=(eId)=>{
     const deals=(arDeals||[]).filter(d=>d.entity_id===eId&&d.outstanding>0);
     const syft=syftRecon?.[eId]||{};
@@ -210,16 +222,18 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
     const wks=Array(11).fill(0);const wkDeals=Array.from({length:11},()=>[]);
     let assigned=0;
     const overdue=[];const undated=[];
-    const today=new Date();today.setHours(0,0,0,0);
     const wk0Start=weekStarts[0];
     deals.forEach(d=>{
-      if(!d.promised_date){undated.push(d);return}
-      const pd=new Date(d.promised_date+'T00:00:00');
-      if(pd<wk0Start){overdue.push(d);return}
-      let placed=false;
-      for(let i=0;i<11;i++){const ws=weekStarts[i],we=new Date(ws.getTime()+6*864e5);
-        if(pd>=ws&&pd<=we){wks[i]+=(d.outstanding||0);wkDeals[i].push(d);assigned+=(d.outstanding||0);placed=true;break}}
-      if(!placed){/* beyond 11 weeks */}
+      const sched=paySchedule(d);
+      sched.forEach(s=>{
+        const payAmt=Math.round((d.outstanding||0)*s.pct/100);
+        if(!s.date){undated.push({...d,outstanding:payAmt});return}
+        const pd=new Date(s.date+'T00:00:00');
+        if(pd<wk0Start){overdue.push({...d,outstanding:payAmt});return}
+        let placed=false;
+        for(let i=0;i<11;i++){const ws=weekStarts[i],we=new Date(ws.getTime()+6*864e5);
+          if(pd>=ws&&pd<=we){wks[i]+=payAmt;wkDeals[i].push({...d,outstanding:payAmt,_schedLabel:s.label});assigned+=payAmt;placed=true;break}}
+      });
     });
     const overdueTotal=overdue.reduce((s,d)=>s+(d.outstanding||0),0)+undated.reduce((s,d)=>s+(d.outstanding||0),0);
     return {wks,wkDeals,totalAR,assigned,overdue,undated,overdueTotal};
@@ -720,13 +734,30 @@ function App(){
       // ═══ ENTITY CASHFLOW ═══
       tab==="entity"&&(()=>{const e=entMap[eTab],eAR=ar.filter(d=>d.entity_id===eTab&&d.outstanding>0),eAP=ap.filter(d=>d.entity_id===eTab),eWF=waterfall?.entities?.[eTab];
         const cash=e?(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0):0;
+        const fc=n=>fmtC(n,eTab); // local currency formatter
+        // Payment schedule logic for AR deals
+        const PAY_DELAY=10; // days lag after milestone
+        const arPaySchedule=(d)=>{
+          const t=d.payment_terms||'';const amt=d.outstanding||0;
+          const promised=d.promised_date;const install=d.install_date;
+          if(t.includes('50/50')){
+            const d1=promised?addDays(promised,PAY_DELAY):null;
+            const d2=install?addDays(install,PAY_DELAY):null;
+            return [{pct:50,date:d1,label:"50% on confirmation"},{pct:50,date:d2,label:"50% on install"}];
+          }
+          if(t.includes('Due on Confirmation')) return [{pct:100,date:promised?addDays(promised,PAY_DELAY):null,label:"Due on confirmation"}];
+          if(t.includes('Net 30 from install')) return [{pct:100,date:install?addDays(install,30):null,label:"Net 30 from install"}];
+          if(t.includes('Net 30 from invoice')||t.includes('Net 30')) return [{pct:100,date:promised?addDays(promised,30):null,label:"Net 30"}];
+          if(t.includes('Net 60')) return [{pct:100,date:promised?addDays(promised,60):null,label:"Net 60"}];
+          return [{pct:100,date:promised?addDays(promised,PAY_DELAY):null,label:t||"Standard"}];
+        };
         return h("div",null,
           h("div",{style:{display:"flex",gap:6,marginBottom:14}},["US","CA","UK","AU"].map(k=>h("button",{key:k,className:"pill"+(eTab===k?" active":""),style:{"--c":C.ent[k]},onClick:()=>setETab(k)},(entMap[k]||{}).label||k))),
           e&&h("div",{className:"card",style:{padding:16,marginBottom:14,borderTop:"3px solid "+C.ent[eTab],background:C.entBg[eTab]}},
             h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
               h("div",null,h("div",{style:{fontSize:16,fontWeight:700,color:C.ent[eTab]}},e.label),h("div",{style:{fontSize:11,color:C.mid}},e.name+" \u00b7 "+e.currency)),
               h("div",{style:{display:"flex",gap:20,textAlign:"center"}},
-                [{l:"Cash",v:fmtF(cash)},{l:"AR ("+eAR.length+")",v:fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0)),c:C.ok},{l:"AP ("+eAP.length+")",v:fmtF(eAP.reduce((s,d)=>s+d.amount,0)),c:C.bad}].map((x,i)=>h("div",{key:i},h("div",{style:{fontSize:9,color:C.mid}},x.l),h("div",{style:{fontSize:18,fontWeight:700,color:x.c||C.steel}},x.v)))
+                [{l:"Cash",v:fc(cash)},{l:"AR ("+eAR.length+")",v:fc(eAR.reduce((s,d)=>s+(d.outstanding||0),0)),c:C.ok},{l:"AP ("+eAP.length+")",v:fc(eAP.reduce((s,d)=>s+d.amount,0)),c:C.bad}].map((x,i)=>h("div",{key:i},h("div",{style:{fontSize:9,color:C.mid}},x.l),h("div",{style:{fontSize:18,fontWeight:700,color:x.c||C.steel}},x.v)))
               )
             )
           ),
@@ -736,41 +767,53 @@ function App(){
             h("div",{style:{overflowX:"auto"}},h("table",null,
               h("thead",null,h("tr",null,h("th",{style:{minWidth:140}},""),eWF.weeks.slice(0,8).map((w,i)=>h("th",{key:i,style:{textAlign:"right",minWidth:70}},w.week)))),
               h("tbody",null,
-                h("tr",{style:{background:C.offWhite}},h("td",{style:{fontWeight:700}},"Opening"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600}},fmtF(w.open)))),
+                h("tr",{style:{background:C.offWhite}},h("td",{style:{fontWeight:700}},"Opening"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600}},fc(w.open)))),
                 h("tr",null,h("td",{style:{color:C.ok,fontWeight:600,paddingTop:8},colSpan:9},"INFLOWS")),
                 h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"Overdue AR"),eWF.weeks.slice(0,8).map((w,i)=>{
-                  const tip=(w.arDetails||[]).map(d=>d.name+": "+fmtF(d.amount)).join("\n");
-                  return h("td",{key:i,style:{textAlign:"right",color:w.arIn?C.ok:C.warm,cursor:tip?"help":"default"},title:tip||undefined},w.arIn?fmtF(w.arIn):"\u2014")})),
-                h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"New Orders"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w.newOrders?C.ok:C.warm}},w.newOrders?fmtF(w.newOrders):"\u2014"))),
-                h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.ok}},"Total In"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.ok}},fmtF(w.totIn)))),
+                  const tip=(w.arDetails||[]).map(d=>d.name+": "+fc(d.amount)).join("\n");
+                  return h("td",{key:i,style:{textAlign:"right",color:w.arIn?C.ok:C.warm,cursor:tip?"help":"default"},title:tip||undefined},w.arIn?fc(w.arIn):"\u2014")})),
+                h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"New Orders"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w.newOrders?C.ok:C.warm}},w.newOrders?fc(w.newOrders):"\u2014"))),
+                h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.ok}},"Total In"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.ok}},fc(w.totIn)))),
                 h("tr",null,h("td",{style:{color:C.bad,fontWeight:600,paddingTop:8},colSpan:9},"OUTFLOWS")),
                 h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"Vendor AP"),eWF.weeks.slice(0,8).map((w,i)=>{
-                  const tip=(w.apDetails||[]).map(d=>d.name+": "+fmtF(d.amount)).join("\n");
-                  return h("td",{key:i,style:{textAlign:"right",color:w.vendorAP?C.bad:C.warm,cursor:tip?"help":"default"},title:tip||undefined},w.vendorAP?"-"+fmtF(w.vendorAP):"\u2014")})),
-                [{k:"payroll",l:"Payroll"},{k:"marketing",l:"Marketing"},{k:"amexPayoff",l:"Amex Payoff"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"},{k:"diCogs",l:"Install Costs"},{k:"invRepl",l:"Stock Replacement"}].map(r=>h("tr",{key:r.k},h("td",{style:{paddingLeft:16,color:"#5A6660"}},r.l),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.bad:C.warm}},w[r.k]?"-"+fmtF(w[r.k]):"\u2014")))),
+                  const tip=(w.apDetails||[]).map(d=>d.name+": "+fc(d.amount)).join("\n");
+                  return h("td",{key:i,style:{textAlign:"right",color:w.vendorAP?C.bad:C.warm,cursor:tip?"help":"default"},title:tip||undefined},w.vendorAP?"-"+fc(w.vendorAP):"\u2014")})),
+                [{k:"payroll",l:"Payroll"},{k:"marketing",l:"Marketing"},{k:"amexPayoff",l:"Amex Payoff"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"},{k:"diCogs",l:"Install Costs"},{k:"invRepl",l:"Stock Replacement"}].map(r=>h("tr",{key:r.k},h("td",{style:{paddingLeft:16,color:"#5A6660"}},r.l),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.bad:C.warm}},w[r.k]?"-"+fc(w[r.k]):"\u2014")))),
                 // Scheduled payments broken out by description
-                (()=>{const eSchedPmts=(ap||[]).length?[]:[];const schedItems={};
+                (()=>{const schedItems={};
                   (eWF.weeks||[]).slice(0,8).forEach((w,i)=>{if(w.scheduledDetails)w.scheduledDetails.forEach(sd=>{if(!schedItems[sd.name])schedItems[sd.name]=Array(8).fill(0);schedItems[sd.name][i]=sd.amount})});
                   const names=Object.keys(schedItems);
                   return names.length>0?names.map(name=>h("tr",{key:"sched-"+name},h("td",{style:{paddingLeft:16,color:"#5A6660",fontSize:10}},name),
-                    schedItems[name].map((amt,i)=>h("td",{key:i,style:{textAlign:"right",color:amt?C.bad:C.warm,fontSize:10}},amt?"-"+fmtF(amt):"\u2014"))))
-                  :h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"Scheduled"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w.scheduled?C.bad:C.warm}},w.scheduled?"-"+fmtF(w.scheduled):"\u2014")))})(),
-                h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.bad}},"Total Out"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.bad}},"-"+fmtF(w.totOut)))),
-                h("tr",{style:{background:C.offWhite,borderTop:"2px solid #E8E7E3"}},h("td",{style:{fontWeight:700}},"Closing"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:700,color:w.close<0?C.bad:C.steel}},fmtF(w.close)))),
-                h("tr",null,h("td",{style:{fontSize:10,color:C.mid}},"Ex. Stock"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontSize:10,color:C.blue}},fmtF(w.closeExStock))))
+                    schedItems[name].map((amt,i)=>h("td",{key:i,style:{textAlign:"right",color:amt?C.bad:C.warm,fontSize:10}},amt?"-"+fc(amt):"\u2014"))))
+                  :h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"Scheduled"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w.scheduled?C.bad:C.warm}},w.scheduled?"-"+fc(w.scheduled):"\u2014")))})(),
+                h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.bad}},"Total Out"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.bad}},"-"+fc(w.totOut)))),
+                h("tr",{style:{background:C.offWhite,borderTop:"2px solid #E8E7E3"}},h("td",{style:{fontWeight:700}},"Closing"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:700,color:w.close<0?C.bad:C.steel}},fc(w.close)))),
+                h("tr",null,h("td",{style:{fontSize:10,color:C.mid}},"Ex. Stock"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontSize:10,color:C.blue}},fc(w.closeExStock))))
               )
             ))
           ),
-          // AR table
-          h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},h("span",null,"AR ("+eAR.length+")"),h("span",null,fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0)))),
-            h("table",null,h("thead",null,h("tr",null,["Customer","Owner","Outstanding","Terms","Promised","Status"].map(x=>h("th",{key:x},x)))),
-              h("tbody",null,eAR.map(d=>h("tr",{key:d.id},h("td",{style:{fontWeight:500}},d.deal_name),h("td",{style:{color:C.mid,fontSize:10}},d.owner),h("td",{style:{fontWeight:600,color:C.ok}},fmtF(d.outstanding)),h("td",{style:{color:C.mid,fontSize:10}},d.payment_terms),h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),h("td",null,h("span",{className:"badge "+(d.status||"current")},d.status))))))),
+          // AR table with install date and payment schedule
+          h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},h("span",null,"AR ("+eAR.length+")"),h("span",null,fc(eAR.reduce((s,d)=>s+(d.outstanding||0),0)))),
+            h("table",null,h("thead",null,h("tr",null,["Customer","Owner","Outstanding","Terms","Promised","Install","Payment Schedule","Status"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
+              h("tbody",null,eAR.map(d=>{const sched=arPaySchedule(d);
+                return h("tr",{key:d.id},
+                  h("td",{style:{fontWeight:500}},d.deal_name),
+                  h("td",{style:{color:C.mid,fontSize:10}},d.owner),
+                  h("td",{style:{fontWeight:600,color:C.ok}},fc(d.outstanding)),
+                  h("td",{style:{color:C.mid,fontSize:10}},d.payment_terms),
+                  h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
+                  h("td",{style:{fontSize:10}},dateFmt(d.install_date)),
+                  h("td",{style:{fontSize:9}},sched.map((s,si)=>h("div",{key:si,style:{display:"flex",justifyContent:"space-between",gap:8,padding:"1px 0",borderBottom:si<sched.length-1?"1px solid #F0EFEB":"none"}},
+                    h("span",{style:{color:C.mid}},s.label),
+                    h("span",{style:{fontWeight:600,color:C.ok}},fc(Math.round((d.outstanding||0)*s.pct/100))),
+                    h("span",{style:{color:s.date?C.steel:C.warn}},s.date?dateFmt(s.date):"TBD")))),
+                  h("td",null,h("span",{className:"badge "+(d.status||"current")},d.status)))})))),
           // AP table with notes
-          eAP.length>0&&h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},h("span",null,"Accounts Payable"),h("span",null,fmtF(eAP.reduce((s,d)=>s+d.amount,0))+" "+e?.currency)),
+          eAP.length>0&&h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},h("span",null,"Accounts Payable"),h("span",null,fc(eAP.reduce((s,d)=>s+d.amount,0)))),
             h("table",null,h("thead",null,h("tr",null,["Vendor","Amount","Due Date","Status","Notes","Updated",""].map(x=>h("th",{key:x},x)))),
               h("tbody",null,eAP.map(d=>h("tr",{key:d.id},
                 h("td",{style:{fontWeight:500}},d.vendor_name),
-                h("td",{style:{fontWeight:600,color:C.bad}},fmtF(d.amount)),
+                h("td",{style:{fontWeight:600,color:C.bad}},fc(d.amount)),
                 h("td",{style:{fontSize:10}},d.due_date?dateFmt(d.due_date):"—"),
                 h("td",null,h("select",{value:d.ap_status||"pending",style:{fontSize:10,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3,background:d.ap_status==="hold"?"#FEF3D6":d.ap_status==="paid"?"#E2F5EC":d.ap_status==="investigating"?"#EDF2FE":"#fff"},
                   onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({ap_status:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],ap_status:ev.target.value};setAp(nd)})}},
