@@ -862,16 +862,23 @@ function App(){
                   const file=ev.target.files[0];if(!file)return;const reader=new FileReader();
                   reader.onload=e=>{const text=e.target.result,lines=text.split("\n").filter(l=>l.trim());
                     if(lines.length<2)return;
+                    // RFC 4180 CSV parser: handles quoted fields with commas inside
+                    const parseCSV=line=>{const res=[];let cur='',inQ=false;
+                      for(let i=0;i<line.length;i++){const c=line[i];
+                        if(c==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++}else{inQ=!inQ}}
+                        else if(c===','&&!inQ){res.push(cur.trim());cur=''}
+                        else{cur+=c}}
+                      res.push(cur.trim());return res};
                     // Auto-detect header row: find first line containing "outstanding" or "product"
                     let hdrIdx=0;
                     for(let i=0;i<Math.min(lines.length,10);i++){
                       const low=lines[i].toLowerCase();
                       if(low.includes('outstanding')||low.includes('product')||low.includes('interest rate')){hdrIdx=i;break}}
-                    const hdr=lines[hdrIdx].split(",").map(h=>h.trim().toLowerCase().replace(/[^a-z]/g,''));
+                    const hdr=parseCSV(lines[hdrIdx]).map(h=>h.toLowerCase().replace(/[^a-z]/g,''));
                     // Parse number: strip commas, $, %, whitespace
                     const pn=s=>{if(!s)return 0;return parseFloat(s.replace(/[$,%\s]/g,'').replace(/,/g,''))||0};
                     const find=(row,...keys)=>{for(const k of keys){const idx=hdr.findIndex(h=>h.includes(k));if(idx>=0&&row[idx]?.trim())return row[idx].trim()}return ''};
-                    const rows=lines.slice(hdrIdx+1).map(l=>l.split(","));
+                    const rows=lines.slice(hdrIdx+1).map(l=>parseCSV(l));
                     const loans=rows.filter(r=>pn(find(r,'outstandingtrade','outstanding','audequivalent'))>0).map(r=>({
                       entity_id:'AU',
                       reference:find(r,'bankreference','reference'),
