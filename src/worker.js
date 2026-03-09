@@ -18,7 +18,7 @@ function json(data, status = 200) {
 async function loadAllInputs(DB) {
   const [entities, banks, arRates, apRates, newOrders, amex, config,
     arDeals, apVendors, stockPOs, tradeLoans, scheduled, syftRecon,
-    scenarios, overrides, settings] = await Promise.all([
+    scenarios, overrides, settings, arHubspotOverflow] = await Promise.all([
     DB.prepare('SELECT * FROM entities').all(),
     DB.prepare('SELECT * FROM bank_accounts').all(),
     DB.prepare('SELECT * FROM input_ar_collection ORDER BY entity_id, week_num').all(),
@@ -35,11 +35,13 @@ async function loadAllInputs(DB) {
     DB.prepare('SELECT * FROM scenarios WHERE is_active = 1').all(),
     DB.prepare('SELECT * FROM scenario_overrides').all(),
     DB.prepare('SELECT * FROM settings').all(),
+    DB.prepare('SELECT * FROM input_ar_hubspot_overflow ORDER BY entity_id, week_num').all(),
   ]);
   const byEntity = (rows, f='entity_id') => { const m={}; rows.forEach(r=>{const k=r[f]; if(!m[k])m[k]=[]; m[k].push(r)}); return m; };
   return {
     entities: entities.results, banks: byEntity(banks.results),
     arRates: byEntity(arRates.results), apRates: byEntity(apRates.results),
+    arHubspotOverflow: byEntity(arHubspotOverflow.results),
     newOrders: Object.fromEntries(newOrders.results.map(r=>[r.entity_id,r])),
     amex: Object.fromEntries(amex.results.map(r=>[r.entity_id,r])),
     config: Object.fromEntries(config.results.map(r=>[r.entity_id,r])),
@@ -73,6 +75,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const weeks=getWeekDates(startDate,N);
   const cfg=inputs.config[eId]||{}, ent=inputs.entities.find(e=>e.id===eId)||{};
   const fxRate=ent.fx_rate||1;
+  const arMode=inputs.settings.ar_collection_mode||'aggregate';
 
   // Opening balance
   const eBanks=inputs.banks[eId]||[];
@@ -84,6 +87,35 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const apTotal=syft.ap_total||(inputs.apVendors[eId]||[]).reduce((s,v)=>s+v.amount,0);
   const arRates=(inputs.arRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
   const apRates=(inputs.apRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
+
+  // HubSpot mode: bucket deals by promised_date + overflow
+  let hsWkAmounts=null, hsOverdueTotal=0, hsArDealsByWeek=null;
+  if(arMode==='hubspot'){
+    const deals=(inputs.arDeals[eId]||[]).filter(d=>d.outstanding>0);
+    const wk0Start=weeks[0].start;
+    const wkAmts=Array(N).fill(0);
+    const wkDeals=Array.from({length:N},()=>[]);
+    const overdue=[];
+    deals.forEach(d=>{
+      if(!d.promised_date){overdue.push(d);return}
+      const pd=new Date(d.promised_date+'T00:00:00Z');
+      if(pd<wk0Start){overdue.push(d);return}
+      for(let i=0;i<N;i++){
+        if(pd>=weeks[i].start&&pd<=weeks[i].end){wkAmts[i]+=(d.outstanding||0);wkDeals[i].push({name:d.deal_name,amount:d.outstanding});break}
+      }
+    });
+    hsOverdueTotal=overdue.reduce((s,d)=>s+(d.outstanding||0),0);
+    const overflowRates=(inputs.arHubspotOverflow[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
+    hsWkAmounts=wkAmts.map((dated,i)=>{
+      const ofRate=overflowRates.find(r=>r.week_num===i+1)?.overflow_pct||0;
+      return dated+hsOverdueTotal*ofRate;
+    });
+    hsArDealsByWeek=wkDeals;
+  }
+
+  // AP deal breakdown per week for tooltips
+  const apVendorsByWeek=Array.from({length:N},()=>[]);
+  const apVendorList=inputs.apVendors[eId]||[];
 
   // New orders
   const no=inputs.newOrders[eId]||{monthly_revenue_local:0,delay_weeks:4,ramp_weeks:2,cogs_rate:0.075,replacement_rate:0.2};
@@ -115,12 +147,17 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     const wk=weeks[w], open=bal;
 
     // INFLOWS
-    const arRate=arRates[w]?.rate||0;
-    let overdueAR=arTotal*arRate;
+    let overdueAR;
+    if(arMode==='hubspot'&&hsWkAmounts){
+      overdueAR=hsWkAmounts[w]||0;
+    } else {
+      const arRate=arRates[w]?.rate||0;
+      overdueAR=arTotal*arRate;
+    }
     if(arDelayPct>0&&arDelayWks>0){ overdueAR-=overdueAR*arDelayPct; }
     if(arDelayPct>0&&arDelayWks>0&&w>=arDelayWks){
-      const srcRate=arRates[w-arDelayWks]?.rate||0;
-      overdueAR+=arTotal*srcRate*arDelayPct;
+      const srcWkAR=arMode==='hubspot'&&hsWkAmounts?(hsWkAmounts[w-arDelayWks]||0):(arTotal*(arRates[w-arDelayWks]?.rate||0));
+      overdueAR+=srcWkAR*arDelayPct;
     }
 
     let newOrdersCash=0;
@@ -132,7 +169,15 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     const totIn=overdueAR+newOrdersCash;
 
     // OUTFLOWS
-    const vendorAP=apTotal*(apRates[w]?.rate||0);
+    const apRate=apRates[w]?.rate||0;
+    const vendorAP=apTotal*apRate;
+    // Track AP vendor breakdown for this week's tooltip
+    if(apRate>0){
+      apVendorList.forEach(v=>{
+        const vAmt=Math.round((v.amount||0)*apRate);
+        if(vAmt>0) apVendorsByWeek[w].push({name:v.vendor_name,amount:vAmt});
+      });
+    }
 
     const freq=cfg.payroll_frequency||'bimonthly';
     let payroll=0;
@@ -158,19 +203,22 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     for(const l of tradeLns){ if(dateInWeek(l.maturity_date,wk.start,wk.end)) tradeOut+=l.settlement||0; }
 
     let scheduledOut=0;
+    const scheduledDetails=[];
     for(const sp of schedPmts){
+      let spAmt=0;
       if(sp.frequency==='monthly'){
         const dom=sp.day_of_month||1;
         for(let d=new Date(wk.start);d<=wk.end;d.setDate(d.getDate()+1)){
           if(d.getDate()===dom){
             const ss=sp.start_date?new Date(sp.start_date):new Date('2020-01-01');
             const se=sp.end_date?new Date(sp.end_date):new Date('2030-12-31');
-            if(d>=ss&&d<=se) scheduledOut+=sp.amount_local||0;
+            if(d>=ss&&d<=se) spAmt+=sp.amount_local||0;
           }
         }
       } else if(sp.frequency==='one-off'){
-        if(dateInWeek(sp.start_date,wk.start,wk.end)) scheduledOut+=sp.amount_local||0;
+        if(dateInWeek(sp.start_date,wk.start,wk.end)) spAmt=sp.amount_local||0;
       }
+      if(spAmt>0){scheduledOut+=spAmt;scheduledDetails.push({name:sp.description||'Scheduled',amount:Math.round(spAmt)})}
     }
 
     const rent=(cfg.rent_monthly||0)/4.33; // monthly to weekly
@@ -180,6 +228,15 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     const totOut=vendorAP+payroll+marketing+amexPayoff+stockOut+tradeOut+scheduledOut+rent+misc+installCosts+stockRepl;
     bal=open+totIn-totOut;
 
+    // AR tooltip: deal breakdown for this week
+    let arDetails=[];
+    if(arMode==='hubspot'&&hsArDealsByWeek){
+      const dated=hsArDealsByWeek[w]||[];
+      if(dated.length) arDetails=arDetails.concat(dated.map(d=>({name:d.name,amount:Math.round(d.amount)})));
+      const ofRate=(inputs.arHubspotOverflow[eId]||[]).find(r=>r.week_num===w+1)?.overflow_pct||0;
+      if(ofRate>0&&hsOverdueTotal>0) arDetails.push({name:'Overdue ('+Math.round(ofRate*100)+'%)',amount:Math.round(hsOverdueTotal*ofRate)});
+    }
+
     weekData.push({
       week:wk.label, weekStart:wk.start.toISOString().slice(0,10), open:Math.round(open),
       arIn:Math.round(overdueAR), newOrders:Math.round(newOrdersCash), totIn:Math.round(totIn),
@@ -188,6 +245,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
       scheduled:Math.round(scheduledOut), rent:Math.round(rent), misc:Math.round(misc),
       diCogs:Math.round(installCosts), invRepl:Math.round(stockRepl), totOut:Math.round(totOut),
       close:Math.round(bal), closeExStock:Math.round(bal+stockOut),
+      arDetails, apDetails:apVendorsByWeek[w]||[], scheduledDetails,
     });
   }
   return { entity:eId, currency:ent.currency||'USD', fxRate, openingCash, arTotal, apTotal, weeks:weekData };
