@@ -126,14 +126,13 @@ function PctInput({value,onChange,style:s}){
 function PayrollTable({config,settings,onSave,onSaveSettings}){
   const [data,setData]=us(config||[]);const [mktBudget,setMktBudget]=us(parseFloat(settings?.marketing_monthly_usd||225000));
   ue(()=>setData(config||[]),[config]);
-  const upd=(eId,f,v)=>setData(d=>d.map(r=>r.entity_id===eId?{...r,[f]:v}:r));
+  const upd=(eId,f,v)=>{const nd=data.map(r=>r.entity_id===eId?{...r,[f]:v}:r);setData(nd);onSave&&onSave(nd)};
   const mktCheck=data.reduce((s,r)=>s+(r.marketing_pct||0),0);
   return h("div",null,
-    // Payroll
     h("div",{className:"card section"},
-      h("div",{className:"card-hdr"},h("span",null,"Payroll"),h("button",{className:"btn btn-sm btn-primary",onClick:()=>onSave&&onSave(data)},"Save")),
+      h("div",{className:"card-hdr"},h("span",null,"Payroll & Operating Costs"),h("span",{style:{fontSize:10,color:C.ok}},"\u2713 Auto-saves on edit")),
       h("table",null,
-        h("thead",null,h("tr",null,h("th",{style:{width:140}},""),["US","CA","UK","AU"].map(e=>h("th",{key:e,style:{color:C.ent[e]}},e+" ("+(CURR[e]||{}).c+")")))),
+        h("thead",null,h("tr",null,h("th",{style:{width:150}},""),["US","CA","UK","AU"].map(e=>h("th",{key:e,style:{color:C.ent[e]}},e+" ("+(CURR[e]||{}).c+")")))),
         h("tbody",null,
           h("tr",null,h("td",{style:{fontWeight:500,color:C.mid,fontSize:11}},"Payroll Amount"),["US","CA","UK","AU"].map(e=>{const r=data.find(x=>x.entity_id===e)||{};return h("td",{key:e},h(CInput,{value:r.payroll_amount,entity:e,onChange:v=>upd(e,"payroll_amount",v)}))})),
           h("tr",null,h("td",{style:{fontWeight:500,color:C.mid,fontSize:11}},"Payroll Tax"),["US","CA","UK","AU"].map(e=>{const r=data.find(x=>x.entity_id===e)||{};return h("td",{key:e},h(CInput,{value:r.payroll_tax,entity:e,onChange:v=>upd(e,"payroll_tax",v)}))})),
@@ -144,12 +143,11 @@ function PayrollTable({config,settings,onSave,onSaveSettings}){
           h("tr",null,h("td",{style:{fontWeight:500,color:C.mid,fontSize:11}},"Stock Replacement %"),["US","CA","UK","AU"].map(e=>{const r=data.find(x=>x.entity_id===e)||{};return h("td",{key:e},h(PctInput,{value:r.stock_replacement_pct,onChange:v=>upd(e,"stock_replacement_pct",v)}))}))
         ))
     ),
-    // Marketing
     h("div",{className:"card section"},
-      h("div",{className:"card-hdr"},h("span",null,"Marketing Budget"),h("button",{className:"btn btn-sm btn-primary",onClick:()=>{onSave&&onSave(data);onSaveSettings&&onSaveSettings({marketing_monthly_usd:String(mktBudget)})}},"Save")),
+      h("div",{className:"card-hdr"},h("span",null,"Marketing Budget"),h("span",{style:{fontSize:10,color:C.ok}},"\u2713 Auto-saves")),
       h("div",{style:{padding:"12px 16px",display:"flex",alignItems:"center",gap:12,borderBottom:"1px solid #E8E7E3",background:"#FAFAF8"}},
         h("span",{style:{fontSize:11,fontWeight:600,color:C.mid}},"Total Monthly Budget (USD)"),
-        h(CInput,{value:mktBudget,entity:"US",onChange:v=>setMktBudget(v)}),
+        h(CInput,{value:mktBudget,entity:"US",onChange:v=>{setMktBudget(v);onSaveSettings&&onSaveSettings({marketing_monthly_usd:String(v)})}}),
         mktCheck!==1&&h("span",{style:{fontSize:10,color:C.bad,fontWeight:600}},"\u26a0 Allocation = "+fmtPct(mktCheck)+" (should be 100%)")),
       h("table",null,
         h("thead",null,h("tr",null,["Entity","Amex","Currency","Allocation %","Monthly USD","Weekly (Local)"].map(x=>h("th",{key:x},x)))),
@@ -170,10 +168,10 @@ function PayrollTable({config,settings,onSave,onSaveSettings}){
 function NewOrdersTable({orders,onSave}){
   const [data,setData]=us(orders||[]);
   ue(()=>setData(orders||[]),[orders]);
-  const upd=(eId,f,v)=>setData(d=>d.map(r=>r.entity_id===eId?{...r,[f]:v}:r));
+  const upd=(eId,f,v)=>{const nd=data.map(r=>r.entity_id===eId?{...r,[f]:v}:r);setData(nd);onSave&&onSave(nd)};
   const totalUSD=data.reduce((s,r)=>{const fx=CURR[r.entity_id]?.fx||1;return s+(r.monthly_revenue_local||0)*fx},0);
   return h("div",{className:"card section"},
-    h("div",{className:"card-hdr"},h("span",null,"New Orders Revenue"),h("button",{className:"btn btn-sm btn-primary",onClick:()=>onSave&&onSave(data)},"Save")),
+    h("div",{className:"card-hdr"},h("span",null,"New Orders Revenue"),h("span",{style:{fontSize:10,color:C.ok}},"\u2713 Auto-saves")),
     h("table",null,
       h("thead",null,h("tr",null,["Entity","Monthly Revenue (Local)","Delay Weeks","Ramp Weeks","Install Cost %","Stock Replacement %"].map((l,i)=>h("th",{key:i},l)))),
       h("tbody",null,
@@ -229,21 +227,34 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
         h("button",{className:"pill"+(mode==="hubspot"?" active":""),style:{"--c":C.blue,fontSize:10},onClick:()=>onSaveSettings({ar_collection_mode:"hubspot"})},"HubSpot Dates"))),
 
     mode==="aggregate"&&h("div",{style:{padding:12}},
-      h("div",{style:{fontSize:10,color:C.mid,marginBottom:8,padding:"6px 10px",background:"#FAFAF8",borderRadius:4,border:"1px solid #E8E7E3"}},"Each week\u2019s % is applied to the Syft AR total. Cumulative should approach ~70-100% to collect most AR. Remaining becomes bad debt / long-tail."),
-      EIDs.map(eId=>{const byE={};(arRates||[]).forEach(r=>{if(!byE[r.entity_id])byE[r.entity_id]=[];byE[r.entity_id].push(r)});
-        const cumul=aggCheck(eId);const syft=syftRecon?.[eId]||{};
-        return h("div",{key:eId,style:{marginBottom:10}},
-          h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}},
-            h("span",{style:{fontSize:11,fontWeight:600,color:C.ent[eId]}},eId+" — Syft AR: "+fmtC(syft.ar_total||0,eId)),
-            h("span",{style:{fontSize:10,fontWeight:600,color:cumul>1.01?C.bad:cumul<0.5?C.warn:C.ok}},"\u03a3 = "+fmtPct(cumul)+(cumul>1.01?" \u26a0 exceeds 100%":""))),
-          h("div",{className:"input-grid"},
-            h("div",{className:"hdr"},"Week"),
-            Array.from({length:11},(_,i)=>h("div",{key:i,className:"hdr",style:{justifyContent:"center"}},i+1)),
-            h("div",{className:"hdr"},"%"),
-            Array.from({length:11},(_,i)=>{const r=(byE[eId]||[]).find(x=>x.week_num===i+1);
-              return h("div",{key:i},h("input",{type:"number",defaultValue:r?Math.round(r.rate*100):0,step:1,min:0,max:100,
-                onBlur:e=>onUpdateRate&&onUpdateRate(eId,i+1,parseFloat(e.target.value)/100)}))}))
-        )})),
+      h("div",{style:{fontSize:10,color:C.mid,marginBottom:8,padding:"6px 10px",background:"#FAFAF8",borderRadius:4,border:"1px solid #E8E7E3"}},"Each week\u2019s % is applied to the Syft AR total. Cumulative should approach ~70-100% to collect most AR."),
+      h("div",{style:{overflowX:"auto"}},h("table",{style:{fontSize:11}},
+        h("thead",null,h("tr",null,
+          h("th",{style:{width:70}},"Week"),
+          EIDs.map(e=>{const syft=syftRecon?.[e]||{};return h("th",{key:e,style:{textAlign:"center"}},
+            h("div",{style:{color:C.ent[e],fontWeight:700}},e),
+            h("div",{style:{fontSize:9,color:C.mid}},fmtC(syft.ar_total||0,e)+" total"))}))),
+        h("tbody",null,
+          Array.from({length:11},(_,i)=>{const byE={};(arRates||[]).forEach(r=>{if(!byE[r.entity_id])byE[r.entity_id]=[];byE[r.entity_id].push(r)});
+            return h("tr",{key:i},
+              h("td",{style:{fontWeight:600,fontSize:10,color:C.mid}},"Wk "+(i+1)),
+              EIDs.map(e=>{const r=(byE[e]||[]).find(x=>x.week_num===i+1);const syft=syftRecon?.[e]||{};
+                const amt=Math.round((syft.ar_total||0)*(r?.rate||0));
+                return h("td",{key:e,style:{textAlign:"center"}},
+                  h("div",{style:{display:"flex",alignItems:"center",gap:4,justifyContent:"center"}},
+                    h("input",{type:"number",defaultValue:r?Math.round(r.rate*100):0,step:5,min:0,max:100,
+                      style:{width:50,textAlign:"center",fontSize:11,padding:"3px 4px",border:"1px solid #E0DFDB",borderRadius:3},
+                      onBlur:ev=>onUpdateRate&&onUpdateRate(e,i+1,parseFloat(ev.target.value)/100)}),
+                    h("span",{style:{fontSize:8,color:C.mid}},"%")),
+                  amt>0&&h("div",{style:{fontSize:9,color:C.ok,marginTop:1}},fmtC(amt,e))
+                )}))
+          }),
+          h("tr",{style:{borderTop:"2px solid #213640",background:"#F5F4F0"}},
+            h("td",{style:{fontWeight:700,fontSize:10}},"\u03a3"),
+            EIDs.map(e=>{const cumul=aggCheck(e);
+              return h("td",{key:e,style:{textAlign:"center",fontWeight:700,color:cumul>1.01?C.bad:C.ok}},fmtPct(cumul))}))
+        )
+      ))),
 
     mode==="hubspot"&&h("div",{style:{padding:12}},
       h("div",{style:{fontSize:10,color:C.mid,marginBottom:8,padding:"6px 10px",background:"#EDF2FE",borderRadius:4,border:"1px solid #D4E0F5"}},"AR is placed into weeks based on HubSpot Promised Date. Amounts without a date or past due are \u201COverflow\u201D — collected at the overflow % per week below."),
@@ -273,22 +284,24 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
 function ScheduledTable({payments,onSave}){
   const [data,setData]=us(payments||[]);
   ue(()=>setData(payments||[]),[payments]);
+  const save=(nd)=>{onSave&&onSave(nd)};
+  const updRow=(i,f,v)=>{const nd=[...data];nd[i]={...nd[i],[f]:v};setData(nd)};
   return h("div",{className:"card section"},
     h("div",{className:"card-hdr"},h("span",null,"Scheduled Payments"),
       h("div",{style:{display:"flex",gap:6}},
         h("button",{className:"btn btn-sm btn-outline",onClick:()=>setData(d=>[...d,{entity_id:"US",description:"",amount_local:0,frequency:"one-off",day_of_month:1,start_date:"",end_date:""}])},"+Add"),
-        h("button",{className:"btn btn-sm btn-primary",onClick:()=>onSave&&onSave(data)},"Save"))),
+        h("button",{className:"btn btn-sm btn-primary",onClick:()=>save(data)},"Save All"))),
     h("table",null,
-      h("thead",null,h("tr",null,["Entity","Description","Amount (Local)","Frequency","Day","Start","End",""].map((l,i)=>h("th",{key:i},l)))),
-      h("tbody",null,data.map((sp,i)=>h("tr",{key:i},
-        h("td",null,h("select",{value:sp.entity_id,onChange:e=>{const nd=[...data];nd[i]={...sp,entity_id:e.target.value};setData(nd)}},["US","CA","UK","AU"].map(e=>h("option",{key:e},e)))),
-        h("td",null,h("input",{type:"text",value:sp.description||"",onChange:e=>{const nd=[...data];nd[i]={...sp,description:e.target.value};setData(nd)}})),
-        h("td",null,h(CInput,{value:sp.amount_local,entity:sp.entity_id,onChange:v=>{const nd=[...data];nd[i]={...sp,amount_local:v};setData(nd)}})),
-        h("td",null,h("select",{value:sp.frequency,onChange:e=>{const nd=[...data];nd[i]={...sp,frequency:e.target.value};setData(nd)}},["monthly","one-off"].map(o=>h("option",{key:o},o)))),
-        h("td",null,h("input",{type:"number",value:sp.day_of_month||1,style:{width:50,textAlign:"center"},onChange:e=>{const nd=[...data];nd[i]={...sp,day_of_month:parseInt(e.target.value)};setData(nd)}})),
-        h("td",null,h("input",{type:"text",value:sp.start_date||"",placeholder:"YYYY-MM-DD",style:{width:100},onChange:e=>{const nd=[...data];nd[i]={...sp,start_date:e.target.value};setData(nd)}})),
-        h("td",null,h("input",{type:"text",value:sp.end_date||"",placeholder:"YYYY-MM-DD",style:{width:100},onChange:e=>{const nd=[...data];nd[i]={...sp,end_date:e.target.value};setData(nd)}})),
-        h("td",null,h("button",{className:"btn btn-sm btn-outline",style:{color:C.bad},onClick:()=>setData(d=>d.filter((_,j)=>j!==i))},"\u00d7"))
+      h("thead",null,h("tr",null,["Entity","Description","Amount","Frequency","Day","Date / Start","End",""].map((l,i)=>h("th",{key:i},l)))),
+      h("tbody",null,data.map((sp,i)=>h("tr",{key:sp.id||("new-"+i),style:{background:sp.id?undefined:"#FFFDE7"}},
+        h("td",null,h("select",{value:sp.entity_id||"US",style:{width:55,fontSize:11,padding:3},onChange:e=>updRow(i,"entity_id",e.target.value)},["US","CA","UK","AU"].map(e=>h("option",{key:e},e)))),
+        h("td",null,h("input",{type:"text",value:sp.description||"",style:{minWidth:150},placeholder:"e.g. HMRC VAT",onChange:e=>updRow(i,"description",e.target.value)})),
+        h("td",null,h(CInput,{value:sp.amount_local,entity:sp.entity_id,onChange:v=>updRow(i,"amount_local",v)})),
+        h("td",null,h("select",{value:sp.frequency||"one-off",style:{fontSize:11,padding:3},onChange:e=>updRow(i,"frequency",e.target.value)},["monthly","one-off"].map(o=>h("option",{key:o},o)))),
+        h("td",null,sp.frequency==="monthly"?h("input",{type:"number",value:sp.day_of_month||1,style:{width:40,textAlign:"center",fontSize:11,padding:3,border:"1px solid #E0DFDB",borderRadius:3},onChange:e=>updRow(i,"day_of_month",parseInt(e.target.value))}):h("span",{style:{fontSize:9,color:C.warm}},"—")),
+        h("td",null,h("input",{type:"date",value:sp.start_date||"",style:{fontSize:10,padding:3,border:"1px solid #E0DFDB",borderRadius:3},onChange:e=>updRow(i,"start_date",e.target.value)})),
+        h("td",null,sp.frequency==="monthly"?h("input",{type:"date",value:sp.end_date||"",style:{fontSize:10,padding:3,border:"1px solid #E0DFDB",borderRadius:3},onChange:e=>updRow(i,"end_date",e.target.value)}):h("span",{style:{fontSize:9,color:C.warm}},"—")),
+        h("td",null,h("button",{className:"btn btn-sm btn-outline",style:{color:C.bad,padding:"2px 6px"},onClick:()=>{const nd=data.filter((_,j)=>j!==i);setData(nd)}},"\u00d7"))
       ))))
   );
 }
@@ -297,9 +310,9 @@ function ScheduledTable({payments,onSave}){
 function AmexTable({amex,onSave}){
   const [data,setData]=us(amex||[]);
   ue(()=>setData(amex||[]),[amex]);
-  const upd=(eId,f,v)=>setData(d=>d.map(r=>r.entity_id===eId?{...r,[f]:v}:r));
+  const upd=(eId,f,v)=>{const nd=data.map(r=>r.entity_id===eId?{...r,[f]:v}:r);setData(nd);onSave&&onSave(nd)};
   return h("div",{className:"card section"},
-    h("div",{className:"card-hdr"},h("span",null,"Amex Payoff Schedule"),h("button",{className:"btn btn-sm btn-primary",onClick:()=>onSave&&onSave(data)},"Save")),
+    h("div",{className:"card-hdr"},h("span",null,"Amex Payoff Schedule"),h("span",{style:{fontSize:10,color:C.ok}},"\u2713 Auto-saves")),
     h("table",null,
       h("thead",null,h("tr",null,["Entity","Balance","Weeks to Pay","Start Week","Payment Week (0=spread)"].map((l,i)=>h("th",{key:i},l)))),
       h("tbody",null,data.map(r=>h("tr",{key:r.entity_id},
@@ -316,22 +329,35 @@ function AmexTable({amex,onSave}){
 function APSpreadGrid({rates,entities,apTotals,onUpdate}){
   const byE={};(rates||[]).forEach(r=>{if(!byE[r.entity_id])byE[r.entity_id]=[];byE[r.entity_id].push(r)});
   return h("div",{className:"card section"},
-    h("div",{className:"card-hdr"},"AP Payment Spread (% of vendor AP paid per week)"),
+    h("div",{className:"card-hdr"},"AP Payment Spread"),
     h("div",{style:{padding:12}},
-      entities.map(eId=>{const cumul=(byE[eId]||[]).reduce((s,r)=>s+(r.rate||0),0);const apT=apTotals?.[eId]||0;
-        return h("div",{key:eId,style:{marginBottom:10}},
-          h("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:4}},
-            h("span",{style:{fontSize:11,fontWeight:600,color:C.ent[eId]}},eId+" — AP: "+fmtC(apT,eId)),
-            h("span",{style:{fontSize:10,fontWeight:600,color:cumul>1.01?C.bad:C.ok}},"\u03a3 = "+fmtPct(cumul))),
-          h("div",{className:"input-grid"},
-            h("div",{className:"hdr"},"Week"),
-            Array.from({length:11},(_,i)=>h("div",{key:i,className:"hdr",style:{justifyContent:"center"}},i+1)),
-            h("div",{className:"hdr"},"%"),
-            Array.from({length:11},(_,i)=>{const r=(byE[eId]||[]).find(x=>x.week_num===i+1);
-              return h("div",{key:i},h("input",{type:"number",defaultValue:r?Math.round(r.rate*100):0,step:1,min:0,max:100,
-                onBlur:e=>onUpdate&&onUpdate(eId,i+1,parseFloat(e.target.value)/100)}))})
-          )
-        )}))
+      h("div",{style:{overflowX:"auto"}},h("table",{style:{fontSize:11}},
+        h("thead",null,h("tr",null,
+          h("th",{style:{width:70}},"Week"),
+          entities.map(e=>h("th",{key:e,style:{textAlign:"center"}},
+            h("div",{style:{color:C.ent[e],fontWeight:700}},e),
+            h("div",{style:{fontSize:9,color:C.mid}},fmtC(apTotals?.[e]||0,e)+" total"))))),
+        h("tbody",null,
+          Array.from({length:11},(_,i)=>{
+            return h("tr",{key:i},
+              h("td",{style:{fontWeight:600,fontSize:10,color:C.mid}},"Wk "+(i+1)),
+              entities.map(e=>{const r=(byE[e]||[]).find(x=>x.week_num===i+1);
+                const amt=Math.round((apTotals?.[e]||0)*(r?.rate||0));
+                return h("td",{key:e,style:{textAlign:"center"}},
+                  h("div",{style:{display:"flex",alignItems:"center",gap:4,justifyContent:"center"}},
+                    h("input",{type:"number",defaultValue:r?Math.round(r.rate*100):0,step:5,min:0,max:100,
+                      style:{width:50,textAlign:"center",fontSize:11,padding:"3px 4px",border:"1px solid #E0DFDB",borderRadius:3},
+                      onBlur:ev=>onUpdate&&onUpdate(e,i+1,parseFloat(ev.target.value)/100)}),
+                    h("span",{style:{fontSize:8,color:C.mid}},"%")),
+                  amt>0&&h("div",{style:{fontSize:9,color:C.bad,marginTop:1}},fmtC(amt,e))
+                )}))
+          }),
+          h("tr",{style:{borderTop:"2px solid #213640",background:"#F5F4F0"}},
+            h("td",{style:{fontWeight:700,fontSize:10}},"\u03a3"),
+            entities.map(e=>{const cumul=(byE[e]||[]).reduce((s,r)=>s+(r.rate||0),0);
+              return h("td",{key:e,style:{textAlign:"center",fontWeight:700,color:cumul>1.01?C.bad:C.ok}},fmtPct(cumul))}))
+        )
+      )))
   );
 }
 
@@ -657,7 +683,7 @@ function App(){
                   h("span",{style:{fontSize:9,color:C.mid}},ba.name),
                   ba.type==='credit'&&h("span",{style:{fontSize:8,padding:"1px 5px",borderRadius:3,background:"#FDE8E8",color:C.bad}},"CREDIT")),
                 h("div",{style:{display:"flex",alignItems:"center",gap:4}},
-                  h("span",{style:{fontSize:11,color:C.mid}},"$"),
+                  h("span",{style:{fontSize:11,color:C.mid}},(CURR[e.id]||{s:'$'}).s),
                   h("input",{type:"number",defaultValue:ba.balance||0,style:{fontSize:13,fontWeight:600,padding:"4px 8px",border:"1px solid #E0DFDB",borderRadius:4,background:"#fff",width:"100%",fontFamily:"DM Sans"},
                     onBlur:ev=>{const newVal=parseFloat(ev.target.value)||0;if(newVal!==ba.balance){
                       setSaving(true);
@@ -689,7 +715,11 @@ function App(){
         // Amex payoff
         h(AmexTable,{amex:inputs.amex_payoff,onSave:d=>saveInput('amex-payoff',{entities:d})}),
         // Scheduled payments
-        h(ScheduledTable,{payments:inputs.scheduled_payments,onSave:d=>saveInput('scheduled-payments',{replace_all:true,payments:d})}),
+        h(ScheduledTable,{payments:inputs.scheduled_payments,onSave:d=>{
+          setSaving(true);
+          fetch('/api/inputs/scheduled-payments',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({replace_all:true,payments:d.map(p=>({...p,id:undefined}))})})
+          .then(()=>Promise.all([fetch('/api/inputs').then(r=>r.json()),fetch('/api/waterfall?scenarios=1,2').then(r=>r.json())]))
+          .then(([inp,wf])=>{setInputs(inp);setWaterfall(wf);setSaving(false)}).catch(()=>setSaving(false))}}),
       ),
 
       // ═══ SCENARIOS ═══
