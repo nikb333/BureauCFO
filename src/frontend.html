@@ -96,7 +96,7 @@ function Chart({data,scenarioData,height:H}){
 
 // ── Currency-aware number formatting ──
 const CURR={US:{s:'$',c:'USD',fx:1},CA:{s:'C$',c:'CAD',fx:0.71},UK:{s:'£',c:'GBP',fx:1.33},AU:{s:'A$',c:'AUD',fx:0.68}};
-const fmtC=(n,eId)=>{const c=CURR[eId]||CURR.US;return c.s+Math.abs(n||0).toLocaleString('en-US',{maximumFractionDigits:0})};
+const fmtC=(n,eId)=>{const c=CURR[eId]||CURR.US;const neg=(n||0)<0?'-':'';return neg+c.s+Math.abs(n||0).toLocaleString('en-US',{maximumFractionDigits:0})};
 const fmtPct=(n)=>Math.round((n||0)*100)+'%';
 const addDays=(dateStr,days)=>{if(!dateStr)return null;const d=new Date(dateStr+'T00:00:00');d.setDate(d.getDate()+days);return d.toISOString().slice(0,10)};
 
@@ -761,6 +761,28 @@ function App(){
               )
             )
           ),
+          // Entity chart
+          eWF&&h("div",{className:"card section"},
+            h("div",{className:"card-hdr"},"Cash Forecast \u2014 "+(e?.currency||"")),
+            (()=>{const wks=eWF.weeks.slice(0,8),W=900,H=180,pad={t:20,r:20,b:30,l:70},cw=W-pad.l-pad.r,ch=H-pad.t-pad.b;
+              const vals=wks.flatMap(w=>[w.close,w.closeExStock]);
+              const mn=Math.min(...vals)*1.1,mx=Math.max(...vals)*1.05,rng=mx-mn||1;
+              const xp=i=>pad.l+(i/(wks.length-1))*cw,yp=v=>pad.t+ch-((v-mn)/rng)*ch;
+              const els=[],tks=[mn,mn+rng*.25,mn+rng*.5,mn+rng*.75,mx];
+              tks.forEach((t,i)=>{els.push(h("line",{key:"g"+i,x1:pad.l,x2:W-pad.r,y1:yp(t),y2:yp(t),stroke:"#EDECE8",strokeWidth:1}));els.push(h("text",{key:"gt"+i,x:pad.l-8,y:yp(t)+4,textAnchor:"end",fill:"#847D70",fontSize:9,fontFamily:"DM Sans"},fc(Math.round(t))))});
+              if(mn<0&&mx>0)els.push(h("line",{key:"z",x1:pad.l,x2:W-pad.r,y1:yp(0),y2:yp(0),stroke:C.bad,strokeWidth:1,strokeDasharray:"4 4",opacity:0.4}));
+              wks.forEach((w,i)=>els.push(h("text",{key:"x"+i,x:xp(i),y:H-6,textAnchor:"middle",fill:"#847D70",fontSize:9,fontFamily:"DM Sans"},w.week)));
+              const ptsC=wks.map((w,i)=>xp(i)+","+yp(w.close)).join(" ");
+              const ptsE=wks.map((w,i)=>xp(i)+","+yp(w.closeExStock)).join(" ");
+              els.push(h("polyline",{key:"cl",points:ptsC,fill:"none",stroke:C.ent[eTab]||C.steel,strokeWidth:2.5}));
+              els.push(h("polyline",{key:"ex",points:ptsE,fill:"none",stroke:C.blue,strokeWidth:2,strokeDasharray:"6 3"}));
+              wks.forEach((w,i)=>{els.push(h("circle",{key:"cc"+i,cx:xp(i),cy:yp(w.close),r:3,fill:C.ent[eTab]||C.steel}));els.push(h("circle",{key:"ce"+i,cx:xp(i),cy:yp(w.closeExStock),r:2.5,fill:C.blue}))});
+              return h("div",{style:{position:"relative"}},
+                h("svg",{width:"100%",viewBox:"0 0 "+W+" "+H,style:{display:"block"}},els),
+                h("div",{style:{display:"flex",gap:16,justifyContent:"center",padding:"6px 0",fontSize:10,color:C.mid}},
+                  h("span",null,h("span",{style:{display:"inline-block",width:14,height:3,background:C.ent[eTab]||C.steel,marginRight:4,verticalAlign:"middle"}}),"Closing"),
+                  h("span",null,h("span",{style:{display:"inline-block",width:14,height:3,background:C.blue,marginRight:4,verticalAlign:"middle",borderTop:"2px dashed "+C.blue}}),"Ex. Stock")))})()
+          ),
           // Waterfall table
           eWF&&h("div",{className:"card section"},
             h("div",{className:"card-hdr"},"Weekly Cash Waterfall \u2014 "+(e?.currency||"")),
@@ -778,7 +800,7 @@ function App(){
                 h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"Vendor AP"),eWF.weeks.slice(0,8).map((w,i)=>{
                   const tip=(w.apDetails||[]).map(d=>d.name+": "+fc(d.amount)).join("\n");
                   return h("td",{key:i,style:{textAlign:"right",color:w.vendorAP?C.bad:C.warm,cursor:tip?"help":"default"},title:tip||undefined},w.vendorAP?"-"+fc(w.vendorAP):"\u2014")})),
-                [{k:"payroll",l:"Payroll"},{k:"marketing",l:"Marketing"},{k:"amexPayoff",l:"Amex Payoff"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"},{k:"diCogs",l:"Install Costs"},{k:"invRepl",l:"Stock Replacement"}].map(r=>h("tr",{key:r.k},h("td",{style:{paddingLeft:16,color:"#5A6660"}},r.l),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.bad:C.warm}},w[r.k]?"-"+fc(w[r.k]):"\u2014")))),
+                [{k:"payroll",l:"Payroll"},{k:"marketing",l:"Marketing"},{k:"amexPayoff",l:"Amex Payoff"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"},{k:"rent",l:"Rent"},{k:"misc",l:"Misc / Other"},{k:"diCogs",l:"Install Costs"},{k:"invRepl",l:"Stock Replacement"}].map(r=>h("tr",{key:r.k},h("td",{style:{paddingLeft:16,color:"#5A6660"}},r.l),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.bad:C.warm}},w[r.k]?"-"+fc(w[r.k]):"\u2014")))),
                 // Scheduled payments broken out by description
                 (()=>{const schedItems={};
                   (eWF.weeks||[]).slice(0,8).forEach((w,i)=>{if(w.scheduledDetails)w.scheduledDetails.forEach(sd=>{if(!schedItems[sd.name])schedItems[sd.name]=Array(8).fill(0);schedItems[sd.name][i]=sd.amount})});
@@ -869,11 +891,13 @@ function App(){
                         else if(c===','&&!inQ){res.push(cur.trim());cur=''}
                         else{cur+=c}}
                       res.push(cur.trim());return res};
-                    // Auto-detect header row: find first line containing "outstanding" or "product"
+                    // Auto-detect header row: find first line with 2+ column keywords (not just a title row)
+                    const hdrKeys=['outstanding','interest','maturity','expiry','reference','product','counterparty','rate','bank'];
                     let hdrIdx=0;
                     for(let i=0;i<Math.min(lines.length,10);i++){
                       const low=lines[i].toLowerCase();
-                      if(low.includes('outstanding')||low.includes('product')||low.includes('interest rate')){hdrIdx=i;break}}
+                      const hits=hdrKeys.filter(k=>low.includes(k)).length;
+                      if(hits>=2){hdrIdx=i;break}}
                     const hdr=parseCSV(lines[hdrIdx]).map(h=>h.toLowerCase().replace(/[^a-z]/g,''));
                     // Parse number: strip commas, $, %, whitespace
                     const pn=s=>{if(!s)return 0;return parseFloat(s.replace(/[$,%\s]/g,'').replace(/,/g,''))||0};
