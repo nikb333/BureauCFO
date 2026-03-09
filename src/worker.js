@@ -92,6 +92,12 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const revUplift=parseFloat(scenOv.revenue_uplift||'0');
   const adjWeeklyRev=weeklyRev*(1-revReduction+revUplift);
 
+  // Marketing: global monthly budget × entity % ÷ 4.33 weeks
+  const mktBudget=parseFloat(inputs.settings.marketing_monthly_usd||'225000');
+  const mktPct=cfg.marketing_pct||0;
+  const mktFxRate=fxRate||1;
+  const marketingWeekly=mktBudget*mktPct/4.33/mktFxRate; // convert USD to local
+
   // AR scenario
   const arDelayPct=parseFloat(scenOv.ar_delay_pct||'0');
   const arDelayWks=parseInt(scenOv.ar_delay_weeks||'0');
@@ -134,7 +140,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     else if(freq==='monthly') payroll=(w>0&&w%4===3)?(cfg.payroll_amount||0)+(cfg.payroll_tax||0):0;
     else if(freq==='fortnightly') payroll=(w%2===1)?(cfg.payroll_amount||0):0;
 
-    const marketing=cfg.marketing_weekly_local||0;
+    const marketing=marketingWeekly;
 
     let amexPayoff=0;
     if(amx.balance>0&&amx.weeks_to_pay>0){
@@ -167,10 +173,11 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
       }
     }
 
-    const rent=cfg.rent_weekly||0, misc=cfg.misc_weekly||0;
-    const diCogs=newOrdersCash*(no.cogs_rate||0);
-    const invRepl=newOrdersCash*(no.replacement_rate||0);
-    const totOut=vendorAP+payroll+marketing+amexPayoff+stockOut+tradeOut+scheduledOut+rent+misc+diCogs+invRepl;
+    const rent=(cfg.rent_monthly||0)/4.33; // monthly to weekly
+    const misc=cfg.misc_weekly||0;
+    const installCosts=newOrdersCash*(cfg.install_cost_pct||0);
+    const stockRepl=newOrdersCash*(cfg.stock_replacement_pct||0);
+    const totOut=vendorAP+payroll+marketing+amexPayoff+stockOut+tradeOut+scheduledOut+rent+misc+installCosts+stockRepl;
     bal=open+totIn-totOut;
 
     weekData.push({
@@ -179,7 +186,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
       vendorAP:Math.round(vendorAP), payroll:Math.round(payroll), marketing:Math.round(marketing),
       amexPayoff:Math.round(amexPayoff), stock:Math.round(stockOut), trade:Math.round(tradeOut),
       scheduled:Math.round(scheduledOut), rent:Math.round(rent), misc:Math.round(misc),
-      diCogs:Math.round(diCogs), invRepl:Math.round(invRepl), totOut:Math.round(totOut),
+      diCogs:Math.round(installCosts), invRepl:Math.round(stockRepl), totOut:Math.round(totOut),
       close:Math.round(bal), closeExStock:Math.round(bal+stockOut),
     });
   }
@@ -265,7 +272,7 @@ export default {
 
       // All Inputs
       if(path==='/api/inputs'&&method==='GET'){
-        const [a,b,c,d,e,f,g]=await Promise.all([
+        const [a,b,c,d,e,f,g,hh,st]=await Promise.all([
           env.DB.prepare('SELECT * FROM input_ar_collection ORDER BY entity_id,week_num').all(),
           env.DB.prepare('SELECT * FROM input_ap_spread ORDER BY entity_id,week_num').all(),
           env.DB.prepare('SELECT * FROM input_new_orders').all(),
@@ -273,8 +280,11 @@ export default {
           env.DB.prepare('SELECT * FROM input_entity_config').all(),
           env.DB.prepare('SELECT * FROM scheduled_payments ORDER BY entity_id').all(),
           env.DB.prepare('SELECT * FROM trade_loans ORDER BY maturity_date').all(),
+          env.DB.prepare('SELECT * FROM input_ar_hubspot_overflow ORDER BY entity_id,week_num').all(),
+          env.DB.prepare('SELECT * FROM settings').all(),
         ]);
-        return json({ar_collection:a.results,ap_spread:b.results,new_orders:c.results,amex_payoff:d.results,entity_config:e.results,scheduled_payments:f.results,trade_loans:g.results});
+        const settings={};st.results.forEach(r=>settings[r.key]=r.value);
+        return json({ar_collection:a.results,ap_spread:b.results,new_orders:c.results,amex_payoff:d.results,entity_config:e.results,scheduled_payments:f.results,trade_loans:g.results,ar_hubspot_overflow:hh.results,settings});
       }
 
       // Update inputs
@@ -295,7 +305,12 @@ export default {
       }
       if(path==='/api/inputs/entity-config'&&method==='PUT'){
         const body=await request.json();
-        for(const r of body.entities) await env.DB.prepare('INSERT OR REPLACE INTO input_entity_config VALUES(?,?,?,?,?,?,?,?)').bind(r.entity_id,r.rent_weekly,r.misc_weekly,r.di_cogs_rate,r.marketing_weekly_local,r.payroll_amount,r.payroll_tax,r.payroll_frequency).run();
+        for(const r of body.entities) await env.DB.prepare('UPDATE input_entity_config SET rent_monthly=?,misc_weekly=?,marketing_pct=?,payroll_amount=?,payroll_tax=?,payroll_frequency=?,install_cost_pct=?,stock_replacement_pct=? WHERE entity_id=?').bind(r.rent_monthly||0,r.misc_weekly||0,r.marketing_pct||0,r.payroll_amount||0,r.payroll_tax||0,r.payroll_frequency||'bimonthly',r.install_cost_pct||0,r.stock_replacement_pct||0,r.entity_id).run();
+        return json({success:true});
+      }
+      if(path==='/api/inputs/ar-hubspot-overflow'&&method==='PUT'){
+        const body=await request.json();
+        for(const r of body.rates) await env.DB.prepare('INSERT OR REPLACE INTO input_ar_hubspot_overflow(entity_id,week_num,overflow_pct) VALUES(?,?,?)').bind(r.entity_id,r.week_num,r.overflow_pct).run();
         return json({success:true});
       }
       if(path==='/api/inputs/amex-payoff'&&method==='PUT'){
