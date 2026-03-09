@@ -476,10 +476,21 @@ function App(){
           h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},h("span",null,"AR ("+eAR.length+")"),h("span",null,fmtF(eAR.reduce((s,d)=>s+(d.outstanding||0),0)))),
             h("table",null,h("thead",null,h("tr",null,["Customer","Owner","Outstanding","Terms","Promised","Status"].map(x=>h("th",{key:x},x)))),
               h("tbody",null,eAR.map(d=>h("tr",{key:d.id},h("td",{style:{fontWeight:500}},d.deal_name),h("td",{style:{color:C.mid,fontSize:10}},d.owner),h("td",{style:{fontWeight:600,color:C.ok}},fmtF(d.outstanding)),h("td",{style:{color:C.mid,fontSize:10}},d.payment_terms),h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),h("td",null,h("span",{className:"badge "+(d.status||"current")},d.status))))))),
-          // AP table
-          eAP.length>0&&h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},h("span",null,"AP"),h("span",null,fmtF(eAP.reduce((s,d)=>s+d.amount,0)))),
-            h("table",null,h("thead",null,h("tr",null,["Vendor","Amount"].map(x=>h("th",{key:x},x)))),
-              h("tbody",null,eAP.map(d=>h("tr",{key:d.id},h("td",{style:{fontWeight:500}},d.vendor_name),h("td",{style:{fontWeight:600,color:C.bad}},fmtF(d.amount)))))))
+          // AP table with notes
+          eAP.length>0&&h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},h("span",null,"Accounts Payable"),h("span",null,fmtF(eAP.reduce((s,d)=>s+d.amount,0))+" "+e?.currency)),
+            h("table",null,h("thead",null,h("tr",null,["Vendor","Amount","Due Date","Status","Notes","Updated",""].map(x=>h("th",{key:x},x)))),
+              h("tbody",null,eAP.map(d=>h("tr",{key:d.id},
+                h("td",{style:{fontWeight:500}},d.vendor_name),
+                h("td",{style:{fontWeight:600,color:C.bad}},fmtF(d.amount)),
+                h("td",{style:{fontSize:10}},d.due_date?dateFmt(d.due_date):"—"),
+                h("td",null,h("select",{value:d.ap_status||"pending",style:{fontSize:10,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3,background:d.ap_status==="hold"?"#FEF3D6":d.ap_status==="paid"?"#E2F5EC":d.ap_status==="investigating"?"#EDF2FE":"#fff"},
+                  onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({ap_status:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],ap_status:ev.target.value};setAp(nd)})}},
+                  ["pending","hold","investigating","approved","paid"].map(o=>h("option",{key:o,value:o},o)))),
+                h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note for team...",style:{fontSize:10,minWidth:180,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
+                  onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}})),
+                h("td",{style:{fontSize:9,color:C.warm,maxWidth:80}},d.notes_updated_at?dateFmt(d.notes_updated_at.slice(0,10))+(d.notes_updated_by?" · "+d.notes_updated_by:""):""),
+                h("td",null,d.notes?h("span",{style:{fontSize:9,color:C.warn}},"\ud83d\udcac"):"")
+              )))))
         )})(),
 
       // ═══ STOCK PAYMENTS ═══

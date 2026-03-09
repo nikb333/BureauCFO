@@ -237,6 +237,22 @@ export default {
         return json({vendors:(await env.DB.prepare(q).all()).results});
       }
 
+      // AP update notes/status
+      if(path.startsWith('/api/ap/')&&method==='PUT'){
+        const id=path.split('/').pop();
+        const body=await request.json();
+        const sets=[];const vals=[];
+        if(body.notes!==undefined){sets.push('notes=?');vals.push(body.notes)}
+        if(body.ap_status!==undefined){sets.push('ap_status=?');vals.push(body.ap_status)}
+        if(body.notes_updated_by!==undefined){sets.push('notes_updated_by=?');vals.push(body.notes_updated_by)}
+        sets.push("notes_updated_at=datetime('now')");
+        if(body.due_date!==undefined){sets.push('due_date=?');vals.push(body.due_date)}
+        if(body.amount!==undefined){sets.push('amount=?');vals.push(body.amount)}
+        vals.push(id);
+        await env.DB.prepare('UPDATE ap_overrides SET '+sets.join(',')+' WHERE id=?').bind(...vals).run();
+        return json({success:true});
+      }
+
       // Stock POs
       if(path==='/api/stock-pos'&&method==='GET'){
         const e=url.searchParams.get('entity');
