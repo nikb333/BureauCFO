@@ -197,20 +197,33 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
   const mode=settings?.ar_collection_mode||'aggregate';
   const fxR={US:1,CA:0.71,UK:1.33,AU:0.68};
   const EIDs=["US","CA","UK","AU"];
-  // HubSpot waterfall: bucket deals by promised_date into weeks
   const startDate=settings?.week_start_date||'2026-03-07';
   const weekStarts=Array.from({length:11},(_,i)=>{const d=new Date(startDate);d.setDate(d.getDate()+i*7);return d});
+  const weekLabel=(i)=>{const d=weekStarts[i];return d?d.toLocaleDateString('en-GB',{day:'numeric',month:'short'}):''};
+  const [openAccordion,setOpenAccordion]=us(null);
 
+  // HubSpot waterfall: bucket deals by promised_date into weeks
   const hubspotWaterfall=(eId)=>{
     const deals=(arDeals||[]).filter(d=>d.entity_id===eId&&d.outstanding>0);
     const syft=syftRecon?.[eId]||{};
     const totalAR=syft.ar_total||deals.reduce((s,d)=>s+(d.outstanding||0),0);
-    const wks=Array(11).fill(0);let assigned=0;
-    deals.forEach(d=>{if(!d.promised_date)return;const pd=new Date(d.promised_date+'T00:00:00');
+    const wks=Array(11).fill(0);const wkDeals=Array.from({length:11},()=>[]);
+    let assigned=0;
+    const overdue=[];const undated=[];
+    const today=new Date();today.setHours(0,0,0,0);
+    const wk0Start=weekStarts[0];
+    deals.forEach(d=>{
+      if(!d.promised_date){undated.push(d);return}
+      const pd=new Date(d.promised_date+'T00:00:00');
+      if(pd<wk0Start){overdue.push(d);return}
+      let placed=false;
       for(let i=0;i<11;i++){const ws=weekStarts[i],we=new Date(ws.getTime()+6*864e5);
-        if(pd>=ws&&pd<=we){wks[i]+=(d.outstanding||0);assigned+=(d.outstanding||0);break}}});
+        if(pd>=ws&&pd<=we){wks[i]+=(d.outstanding||0);wkDeals[i].push(d);assigned+=(d.outstanding||0);placed=true;break}}
+      if(!placed){/* beyond 11 weeks */}
+    });
+    const overdueTotal=overdue.reduce((s,d)=>s+(d.outstanding||0),0)+undated.reduce((s,d)=>s+(d.outstanding||0),0);
     const unassigned=totalAR-assigned;
-    return {wks,totalAR,assigned,unassigned};
+    return {wks,wkDeals,totalAR,assigned,unassigned,overdue,undated,overdueTotal};
   };
 
   // Aggregate mode: total check
@@ -256,34 +269,149 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
         )
       ))),
 
-    mode==="hubspot"&&h("div",{style:{padding:12}},
-      h("div",{style:{fontSize:10,color:C.mid,marginBottom:8,padding:"6px 10px",background:"#EDF2FE",borderRadius:4,border:"1px solid #D4E0F5"}},"AR is placed into weeks based on HubSpot Promised Date. Amounts without a date or past due are \u201COverflow\u201D \u2014 collected at the overflow % per week below."),
-      h("div",{style:{overflowX:"auto"}},h("table",{style:{fontSize:11,width:"100%"}},
-        h("thead",null,h("tr",null,
-          h("th",{style:{width:44,padding:"4px 6px"}},"Wk"),
-          EIDs.map(eId=>{const syft=syftRecon?.[eId]||{};const wf=hubspotWaterfall(eId);
-            return h("th",{key:eId,style:{padding:"4px 6px"}},
-              h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+    mode==="hubspot"&&(()=>{
+      const wfByEntity={};EIDs.forEach(eId=>wfByEntity[eId]=hubspotWaterfall(eId));
+      const toUSD=(amt,eId)=>Math.round((amt||0)*(fxR[eId]||1));
+      const totalOverdueUSD=EIDs.reduce((s,eId)=>s+toUSD(wfByEntity[eId].unassigned,eId),0);
+      const totalDatedUSD=EIDs.reduce((s,eId)=>s+toUSD(wfByEntity[eId].assigned,eId),0);
+      const totalARUSD=EIDs.reduce((s,eId)=>s+toUSD(wfByEntity[eId].totalAR,eId),0);
+
+      return h("div",{style:{padding:12}},
+
+        // ── SECTION 1: Overdue AR Summary ──
+        h("div",{style:{marginBottom:16}},
+          h("div",{style:{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",color:C.steel,marginBottom:8}},"Overdue & Undated AR"),
+          h("div",{style:{padding:"10px 14px",background:"#FEF3D6",borderRadius:6,border:"1px solid #F0DDA0",marginBottom:10}},
+            h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+              h("div",null,
+                h("span",{style:{fontSize:20,fontWeight:700,color:C.steel}},fmt(totalOverdueUSD)),
+                h("span",{style:{fontSize:10,color:C.mid,marginLeft:8}},"overdue / undated across all entities")),
+              h("div",{style:{fontSize:10,color:C.mid,textAlign:"right"}},
+                h("div",null,"Total AR: "+fmt(totalARUSD)),
+                h("div",null,"Dated: "+fmt(totalDatedUSD))))),
+          h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}},
+            EIDs.map(eId=>{const wf=wfByEntity[eId];const cnt=wf.overdue.length+wf.undated.length;
+              return h("div",{key:eId,style:{padding:"8px 10px",borderRadius:6,border:"1px solid #E8E7E3",borderTop:"3px solid "+C.ent[eId],background:C.entBg[eId]}},
+                h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4}},
+                  h("span",{style:{fontSize:11,fontWeight:700,color:C.ent[eId]}},eId),
+                  h("span",{style:{fontSize:9,color:C.mid}},cnt+" deal"+(cnt!==1?"s":""))),
+                h("div",{style:{fontSize:16,fontWeight:700,color:C.steel}},fmtC(wf.unassigned,eId)),
+                h("div",{style:{fontSize:9,color:C.mid,marginTop:2}},"of "+fmtC(wf.totalAR,eId)+" total AR"))}))),
+
+        // ── SECTION 2: Deal List Accordion ──
+        h("div",{style:{marginBottom:16}},
+          h("div",{style:{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",color:C.steel,marginBottom:8}},"Overdue Deals"),
+          EIDs.map(eId=>{const wf=wfByEntity[eId];const deals=[...wf.overdue,...wf.undated].sort((a,b)=>(b.outstanding||0)-(a.outstanding||0));
+            if(!deals.length)return null;
+            const isOpen=openAccordion===eId;
+            return h("div",{key:eId,style:{marginBottom:4,border:"1px solid #E8E7E3",borderRadius:6,overflow:"hidden"}},
+              h("div",{onClick:()=>setOpenAccordion(isOpen?null:eId),
+                style:{padding:"8px 12px",background:isOpen?C.entBg[eId]:"#FAFAF8",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",
+                  borderLeft:"3px solid "+C.ent[eId],userSelect:"none"}},
+                h("div",{style:{display:"flex",alignItems:"center",gap:8}},
+                  h("span",{style:{fontSize:10,fontWeight:700,color:C.ent[eId]}},eId),
+                  h("span",{style:{fontSize:10,color:C.mid}},deals.length+" deal"+(deals.length!==1?"s":""))),
+                h("div",{style:{display:"flex",alignItems:"center",gap:10}},
+                  h("span",{style:{fontSize:12,fontWeight:700,color:C.steel}},fmtC(wf.unassigned,eId)),
+                  h("span",{style:{fontSize:12,color:C.mid,transition:"transform 0.2s",transform:isOpen?"rotate(180deg)":"rotate(0)"}},"\u25BC"))),
+              isOpen&&h("div",{style:{maxHeight:280,overflowY:"auto"}},
+                h("table",{style:{width:"100%",fontSize:10,borderCollapse:"collapse"}},
+                  h("thead",null,h("tr",{style:{background:"#F5F4F0",position:"sticky",top:0}},
+                    h("th",{style:{padding:"4px 8px",textAlign:"left",fontWeight:600}},"Deal"),
+                    h("th",{style:{padding:"4px 8px",textAlign:"left",fontWeight:600}},"Owner"),
+                    h("th",{style:{padding:"4px 8px",textAlign:"right",fontWeight:600}},"Outstanding"),
+                    h("th",{style:{padding:"4px 8px",textAlign:"left",fontWeight:600}},"Promised"),
+                    h("th",{style:{padding:"4px 8px",textAlign:"right",fontWeight:600}},"Age"),
+                    h("th",{style:{padding:"4px 4px",width:20}}))),
+                  h("tbody",null,deals.map((d,i)=>h("tr",{key:d.id||i,style:{borderTop:"1px solid #F0EFEB",background:i%2?"#FAFAF8":"#fff"}},
+                    h("td",{style:{padding:"5px 8px",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},d.deal_name||"Untitled"),
+                    h("td",{style:{padding:"5px 8px",color:C.mid}},d.owner||"\u2014"),
+                    h("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600}},fmtC(d.outstanding,eId)),
+                    h("td",{style:{padding:"5px 8px",color:d.promised_date?C.ok:C.warn}},d.promised_date?dateFmt(d.promised_date):"No date"),
+                    h("td",{style:{padding:"5px 8px",textAlign:"right",color:C.mid,fontSize:9}},(d.age_days||0)+"d"),
+                    h("td",{style:{padding:"5px 4px"}},d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{color:C.blue,textDecoration:"none",fontSize:9}},"\u2197"):"")
+                  ))))))})),
+
+        // ── SECTION 3: Overdue Collection Schedule (4 weeks) ──
+        h("div",{style:{marginBottom:16}},
+          h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}},
+            h("div",{style:{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",color:C.steel}},"Overdue Collection Schedule"),
+            h("span",{style:{fontSize:9,color:C.mid}},"Set % of overdue AR you expect to collect each week. Rates persist when data refreshes.")),
+          h("div",{style:{overflowX:"auto"}},h("table",{style:{fontSize:11,width:"100%",borderCollapse:"collapse"}},
+            h("thead",null,h("tr",{style:{background:"#F5F4F0"}},
+              h("th",{style:{padding:"6px 8px",textAlign:"left",width:90,fontSize:10}},"Week"),
+              EIDs.map(eId=>h("th",{key:eId,style:{padding:"6px 8px",textAlign:"center"}},
                 h("span",{style:{color:C.ent[eId],fontWeight:700}},eId),
-                h("span",{style:{fontSize:9,color:C.mid}},fmtC(syft.ar_total||0,eId))),
-              h("div",{style:{display:"flex",justifyContent:"space-between",fontSize:8,marginTop:2}},
-                h("span",{style:{color:C.ok}},"Dated: "+fmtC(wf.assigned,eId)),
-                h("span",{style:{color:C.warn}},"Overflow: "+fmtC(wf.unassigned,eId))))}))),
-        h("tbody",null,
-          Array.from({length:7},(_,i)=>h("tr",{key:i,style:{lineHeight:"28px"}},
-            h("td",{style:{fontWeight:600,fontSize:10,color:C.mid,padding:"2px 6px"}},i+1),
-            EIDs.map(eId=>{const wf=hubspotWaterfall(eId);
-              const overflows={};(arHubspotOverflow||[]).filter(r=>r.entity_id===eId).forEach(r=>overflows[r.week_num]=r.overflow_pct);
-              return h("td",{key:eId,style:{padding:"2px 6px"}},
-                h("div",{style:{display:"flex",alignItems:"center",gap:6}},
-                  wf.wks[i]?h("span",{style:{fontSize:9,color:C.ok,minWidth:60}},fmtC(wf.wks[i],eId)):h("span",{style:{fontSize:9,color:C.warm,minWidth:60}},"\u2014"),
-                  h("span",{style:{fontSize:8,color:C.warn,whiteSpace:"nowrap"}},"Ovfl:"),
-                  h("input",{type:"number",defaultValue:Math.round((overflows[i+1]||0)*100),step:5,min:0,max:100,
-                    style:{width:44,textAlign:"center",fontSize:11,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3},
-                    onBlur:e=>onUpdateOverflow&&onUpdateOverflow(eId,i+1,parseFloat(e.target.value)/100)}),
-                  h("span",{style:{fontSize:9,color:C.mid}},"%")
-                ))}))))
-      )))
+                h("div",{style:{fontSize:8,color:C.mid,fontWeight:400}},"Overdue: "+fmtC(wfByEntity[eId].unassigned,eId)))))),
+            h("tbody",null,
+              Array.from({length:4},(_,i)=>{
+                return h("tr",{key:i,style:{borderTop:"1px solid #F0EFEB"}},
+                  h("td",{style:{padding:"6px 8px",fontWeight:600,fontSize:10,color:C.mid}},
+                    h("div",null,"Wk "+(i+1)),
+                    h("div",{style:{fontSize:8,color:C.warm}},weekLabel(i))),
+                  EIDs.map(eId=>{
+                    const overflows={};(arHubspotOverflow||[]).filter(r=>r.entity_id===eId).forEach(r=>overflows[r.week_num]=r.overflow_pct);
+                    const rate=overflows[i+1]||0;
+                    const amt=Math.round(wfByEntity[eId].unassigned*rate);
+                    return h("td",{key:eId,style:{padding:"6px 8px",textAlign:"center"}},
+                      h("div",{style:{display:"flex",alignItems:"center",justifyContent:"center",gap:4}},
+                        h("input",{type:"number",defaultValue:Math.round(rate*100),step:5,min:0,max:100,
+                          style:{width:44,textAlign:"center",fontSize:11,padding:"3px 4px",border:"1px solid #E0DFDB",borderRadius:3},
+                          onBlur:e=>onUpdateOverflow&&onUpdateOverflow(eId,i+1,parseFloat(e.target.value)/100)}),
+                        h("span",{style:{fontSize:9,color:C.mid}},"%")),
+                      amt>0&&h("div",{style:{fontSize:9,color:C.ok,marginTop:2}},fmtC(amt,eId)))}))
+              }),
+              h("tr",{style:{borderTop:"2px solid "+C.steel,background:"#F5F4F0"}},
+                h("td",{style:{padding:"6px 8px",fontWeight:700,fontSize:10}},"\u03a3 Scheduled"),
+                EIDs.map(eId=>{
+                  const overflows={};(arHubspotOverflow||[]).filter(r=>r.entity_id===eId).forEach(r=>overflows[r.week_num]=r.overflow_pct);
+                  const totalPct=[1,2,3,4].reduce((s,w)=>s+(overflows[w]||0),0);
+                  const totalAmt=Math.round(wfByEntity[eId].unassigned*totalPct);
+                  const remaining=wfByEntity[eId].unassigned-totalAmt;
+                  return h("td",{key:eId,style:{padding:"6px 8px",textAlign:"center"}},
+                    h("div",{style:{fontWeight:700,color:totalPct>1?C.bad:C.ok}},fmtPct(totalPct)),
+                    h("div",{style:{fontSize:9,color:C.ok}},fmtC(totalAmt,eId)),
+                    remaining>0&&h("div",{style:{fontSize:8,color:C.warn,marginTop:2}},"Unscheduled: "+fmtC(remaining,eId)))}))
+            )))),
+
+        // ── SECTION 4: Dated AR by Week ──
+        h("div",null,
+          h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}},
+            h("div",{style:{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",color:C.steel}},"Expected Collections by Date"),
+            h("span",{style:{fontSize:9,color:C.mid}},"Deals placed into weeks based on HubSpot Promised Date")),
+          h("div",{style:{overflowX:"auto"}},h("table",{style:{fontSize:11,width:"100%",borderCollapse:"collapse"}},
+            h("thead",null,h("tr",{style:{background:"#F5F4F0"}},
+              h("th",{style:{padding:"6px 8px",textAlign:"left",width:90,fontSize:10}},"Week"),
+              EIDs.map(eId=>h("th",{key:eId,style:{padding:"6px 8px"}},
+                h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+                  h("span",{style:{color:C.ent[eId],fontWeight:700}},eId),
+                  h("span",{style:{fontSize:9,color:C.mid}},"Dated: "+fmtC(wfByEntity[eId].assigned,eId))))))),
+            h("tbody",null,
+              Array.from({length:8},(_,i)=>{
+                const hasDeals=EIDs.some(eId=>wfByEntity[eId].wkDeals[i]&&wfByEntity[eId].wkDeals[i].length>0);
+                return h(React.Fragment,{key:i},
+                  h("tr",{style:{borderTop:"1px solid #F0EFEB",background:hasDeals?"#fff":"#FAFAF8"}},
+                    h("td",{style:{padding:"6px 8px",fontWeight:600,fontSize:10,color:C.mid,verticalAlign:"top"}},
+                      h("div",null,"Wk "+(i+1)),
+                      h("div",{style:{fontSize:8,color:C.warm}},weekLabel(i))),
+                    EIDs.map(eId=>{const wf=wfByEntity[eId];const deals=wf.wkDeals[i]||[];const amt=wf.wks[i]||0;
+                      return h("td",{key:eId,style:{padding:"6px 8px",verticalAlign:"top"}},
+                        amt>0?h("div",null,
+                          h("div",{style:{fontWeight:700,color:C.ok,marginBottom:4}},fmtC(amt,eId)),
+                          deals.map((d,di)=>h("div",{key:di,style:{fontSize:9,color:C.mid,padding:"1px 0",display:"flex",justifyContent:"space-between",gap:8}},
+                            h("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:140}},d.deal_name||"Untitled"),
+                            h("span",{style:{fontWeight:600,color:C.steel,whiteSpace:"nowrap",flexShrink:0}},fmtC(d.outstanding,eId)))))
+                        :h("span",{style:{fontSize:9,color:C.warm}},"\u2014"))
+                    }))
+                )
+              }),
+              h("tr",{style:{borderTop:"2px solid "+C.steel,background:"#F5F4F0"}},
+                h("td",{style:{padding:"6px 8px",fontWeight:700,fontSize:10}},"Total Dated"),
+                EIDs.map(eId=>h("td",{key:eId,style:{padding:"6px 8px",fontWeight:700,color:C.ok}},fmtC(wfByEntity[eId].assigned,eId))))
+            )))
+        )
+      )
+    })()
   );
 }
 
