@@ -770,7 +770,7 @@ function App(){
                 h("tr",{style:{background:C.offWhite}},h("td",{style:{fontWeight:700}},"Opening"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600}},fc(w.open)))),
                 h("tr",null,h("td",{style:{color:C.ok,fontWeight:600,paddingTop:8},colSpan:9},"INFLOWS")),
                 h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"Overdue AR"),eWF.weeks.slice(0,8).map((w,i)=>{
-                  const tip=(w.arDetails||[]).map(d=>d.name+": "+fc(d.amount)).join("\n");
+                  const tip=(w.arDetails||[]).map(d=>(d.ticket?"\u26a0 ":"")+ d.name+": "+fc(d.amount)+(d.ticket&&d.ticketSubject?" [TICKET: "+d.ticketSubject+"]":"")).join("\n");
                   return h("td",{key:i,style:{textAlign:"right",color:w.arIn?C.ok:C.warm,cursor:tip?"help":"default"},title:tip||undefined},w.arIn?fc(w.arIn):"\u2014")})),
                 h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"New Orders"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w.newOrders?C.ok:C.warm}},w.newOrders?fc(w.newOrders):"\u2014"))),
                 h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.ok}},"Total In"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.ok}},fc(w.totIn)))),
@@ -793,21 +793,28 @@ function App(){
             ))
           ),
           // AR table with install date and payment schedule
-          h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},h("span",null,"AR ("+eAR.length+")"),h("span",null,fc(eAR.reduce((s,d)=>s+(d.outstanding||0),0)))),
-            h("table",null,h("thead",null,h("tr",null,["Customer","Owner","Outstanding","Terms","Promised","Install","Payment Schedule","Status"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
-              h("tbody",null,eAR.map(d=>{const sched=arPaySchedule(d);
-                return h("tr",{key:d.id},
-                  h("td",{style:{fontWeight:500}},d.deal_name),
-                  h("td",{style:{color:C.mid,fontSize:10}},d.owner),
-                  h("td",{style:{fontWeight:600,color:C.ok}},fc(d.outstanding)),
-                  h("td",{style:{color:C.mid,fontSize:10}},d.payment_terms),
-                  h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
-                  h("td",{style:{fontSize:10}},dateFmt(d.install_date)),
-                  h("td",{style:{fontSize:9}},sched.map((s,si)=>h("div",{key:si,style:{display:"flex",justifyContent:"space-between",gap:8,padding:"1px 0",borderBottom:si<sched.length-1?"1px solid #F0EFEB":"none"}},
-                    h("span",{style:{color:C.mid}},s.label),
-                    h("span",{style:{fontWeight:600,color:C.ok}},fc(Math.round((d.outstanding||0)*s.pct/100))),
-                    h("span",{style:{color:s.date?C.steel:C.warn}},s.date?dateFmt(s.date):"TBD")))),
-                  h("td",null,h("span",{className:"badge "+(d.status||"current")},d.status)))})))),
+          (()=>{const ticketDeals=eAR.filter(d=>d.has_open_ticket);
+            return h("div",{className:"card section"},
+              h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},
+                h("span",null,"AR ("+eAR.length+")",ticketDeals.length>0&&h("span",{style:{marginLeft:8,fontSize:9,color:C.bad,fontWeight:600}},ticketDeals.length+" with open tickets")),
+                h("span",null,fc(eAR.reduce((s,d)=>s+(d.outstanding||0),0)))),
+              h("table",null,h("thead",null,h("tr",null,["","Customer","Owner","Outstanding","Terms","Promised","Install","Payment Schedule","Status"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
+                h("tbody",null,eAR.map(d=>{const sched=arPaySchedule(d);
+                  const ticketTip=d.has_open_ticket?[d.ticket_subject||'Open ticket',d.ticket_status?'Status: '+d.ticket_status:'',d.ticket_priority?'Priority: '+d.ticket_priority:'',d.ticket_category?'Category: '+d.ticket_category:''].filter(Boolean).join('\n'):'';
+                  return h("tr",{key:d.id,style:{background:d.has_open_ticket?"#FEF3F3":"transparent"}},
+                    h("td",{style:{width:24,textAlign:"center",padding:"0 4px"}},
+                      d.has_open_ticket?h("span",{title:ticketTip,style:{cursor:"help",fontSize:14,color:C.bad}},"\u26a0"):null),
+                    h("td",{style:{fontWeight:500}},d.deal_name),
+                    h("td",{style:{color:C.mid,fontSize:10}},d.owner),
+                    h("td",{style:{fontWeight:600,color:C.ok}},fc(d.outstanding)),
+                    h("td",{style:{color:C.mid,fontSize:10}},d.payment_terms),
+                    h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
+                    h("td",{style:{fontSize:10}},dateFmt(d.install_date)),
+                    h("td",{style:{fontSize:9}},sched.map((s,si)=>h("div",{key:si,style:{display:"flex",justifyContent:"space-between",gap:8,padding:"1px 0",borderBottom:si<sched.length-1?"1px solid #F0EFEB":"none"}},
+                      h("span",{style:{color:C.mid}},s.label),
+                      h("span",{style:{fontWeight:600,color:C.ok}},fc(Math.round((d.outstanding||0)*s.pct/100))),
+                      h("span",{style:{color:s.date?C.steel:C.warn}},s.date?dateFmt(s.date):"TBD")))),
+                    h("td",null,h("span",{className:"badge "+(d.status||"current")},d.status)))}))))})(),
           // AP table with notes
           eAP.length>0&&h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},h("span",null,"Accounts Payable"),h("span",null,fc(eAP.reduce((s,d)=>s+d.amount,0)))),
             h("table",null,h("thead",null,h("tr",null,["Vendor","Amount","Due Date","Status","Notes","Updated",""].map(x=>h("th",{key:x},x)))),

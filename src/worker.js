@@ -118,7 +118,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
         for(let i=0;i<N;i++){
           if(payDate>=weeks[i].start&&payDate<=weeks[i].end){
             wkAmts[i]+=payAmt;
-            wkDeals[i].push({name:d.deal_name+(sched.length>1?' ('+s.label+')':''),amount:payAmt});
+            wkDeals[i].push({name:d.deal_name+(sched.length>1?' ('+s.label+')':''),amount:payAmt,ticket:d.has_open_ticket?1:0,ticketSubject:d.ticket_subject||''});
             placed=true;break;
           }
         }
@@ -252,7 +252,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     let arDetails=[];
     if(arMode==='hubspot'&&hsArDealsByWeek){
       const dated=hsArDealsByWeek[w]||[];
-      if(dated.length) arDetails=arDetails.concat(dated.map(d=>({name:d.name,amount:Math.round(d.amount)})));
+      if(dated.length) arDetails=arDetails.concat(dated.map(d=>({name:d.name,amount:Math.round(d.amount),ticket:d.ticket||0,ticketSubject:d.ticketSubject||''})));
       const ofRate=(inputs.arHubspotOverflow[eId]||[]).find(r=>r.week_num===w+1)?.overflow_pct||0;
       if(ofRate>0&&hsOverdueTotal>0) arDetails.push({name:'Overdue ('+Math.round(ofRate*100)+'%)',amount:Math.round(hsOverdueTotal*ofRate)});
     }
