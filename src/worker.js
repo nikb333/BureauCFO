@@ -220,7 +220,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     }
 
     let tradeOut=0;
-    for(const l of tradeLns){ if(dateInWeek(l.maturity_date,wk.start,wk.end)) tradeOut+=l.settlement||0; }
+    for(const l of tradeLns){ if(dateInWeek(l.maturity_date,wk.start,wk.end)) tradeOut+=l.settlement||Math.round((l.outstanding||0)*(1+(l.rate||0)/2)); }
 
     let scheduledOut=0;
     const scheduledDetails=[];
@@ -468,6 +468,81 @@ export default {
         const eId=path.split('/').pop(), body=await request.json();
         await env.DB.prepare('UPDATE entities SET fx_rate=? WHERE id=?').bind(body.fx_rate,eId).run();
         return json({success:true});
+      }
+
+      // Seed trade finance from Excel data
+      if(path==='/api/seed-trade-finance'&&method==='POST'){
+        await env.DB.prepare('DELETE FROM trade_loans').run();
+        const loans=[
+          {ref:'EFL20262388628',po:'BUR-AUS-250710-0',out:7285.62,mat:'2026-03-12',rate:0.0562},
+          {ref:'EFL20262388629',po:'BUR2505-AU',out:20607.37,mat:'2026-03-12',rate:0.0562},
+          {ref:'EFL20262388632',po:'HA138',out:28399.00,mat:'2026-03-13',rate:0.0562},
+          {ref:'EFL20262388634',po:'HA147',out:26645.56,mat:'2026-03-27',rate:0.0562},
+          {ref:'EFL20262388633',po:'AU108EB',out:27350.93,mat:'2026-03-27',rate:0.0562},
+          {ref:'EFL20262388585',po:'AU099EB',out:43581.65,mat:'2026-03-27',rate:0.0562},
+          {ref:'EFL20262388588',po:'HA159',out:47206.31,mat:'2026-04-10',rate:0.0575},
+          {ref:'EFL20262388596',po:'HA138',out:66142.84,mat:'2026-04-10',rate:0.0575},
+          {ref:'EFL20262388610',po:'AU108EB',out:56272.81,mat:'2026-04-24',rate:0.0575},
+          {ref:'EFL20262388611',po:'HA140',out:41129.03,mat:'2026-04-24',rate:0.0575},
+          {ref:'EFL20262388598',po:'HA164',out:51513.61,mat:'2026-04-24',rate:0.0575},
+          {ref:'EFL20262388616',po:'AU123EB',out:28744.18,mat:'2026-05-07',rate:0.0588},
+          {ref:'EFL20262388617',po:'CA092EB',out:131819.97,mat:'2026-05-08',rate:0.0588},
+          {ref:'EFL20262388630',po:'HA147',out:63016.95,mat:'2026-05-08',rate:0.0588},
+          {ref:'EFL20262388631',po:'GB038EB',out:95247.90,mat:'2026-05-15',rate:0.0588},
+          {ref:'EFL20262388635',po:'HA148',out:58506.34,mat:'2026-05-21',rate:0.0588},
+          {ref:'EFL20262388636',po:'20251010CA094EB',out:52361.70,mat:'2026-05-22',rate:0.0588},
+          {ref:'EFL20262388641',po:'HA159',out:107603.73,mat:'2026-05-22',rate:0.0588},
+          {ref:'EFL20262404093',po:'',out:283314.32,mat:'2026-07-03',rate:0.0603},
+          {ref:'BUREAU20262242586',po:'',out:255631.69,mat:'2026-07-08',rate:0.0603},
+          {ref:'BUREAU20262246109',po:'',out:21040.02,mat:'2026-07-15',rate:0.0591},
+          {ref:'BUREAU20262049531',po:'AU139EB -PO188-',out:19445.02,mat:'2026-07-22',rate:0.0588},
+          {ref:'BUREAU20262049542',po:'PO183 PO194',out:41066.81,mat:'2026-07-22',rate:0.0588},
+          {ref:'BUREAU20262049541',po:'PI NO HA179',out:15996.44,mat:'2026-07-22',rate:0.0588},
+          {ref:'BUREAU20262054430',po:'',out:395784.04,mat:'2026-07-31',rate:0.0599},
+          {ref:'BUREAU20262056345',po:'',out:211437.73,mat:'2026-08-05',rate:0.0588},
+        ];
+        for(const l of loans){
+          const settlement=Math.round(l.out*(1+l.rate/2));
+          await env.DB.prepare('INSERT INTO trade_loans(entity_id,reference,po_ref,outstanding,settlement,maturity_date,rate) VALUES(?,?,?,?,?,?,?)')
+            .bind('AU',l.ref,l.po,l.out,settlement,l.mat,l.rate).run();
+        }
+        return json({success:true,count:loans.length});
+      }
+
+      // Migrations
+      if(path==='/api/migrate'&&method==='POST'){
+        const migrations=[
+          "ALTER TABLE ar_overrides ADD COLUMN has_open_ticket INTEGER DEFAULT 0",
+          "ALTER TABLE ar_overrides ADD COLUMN ticket_subject TEXT",
+          "ALTER TABLE ar_overrides ADD COLUMN ticket_status TEXT",
+          "ALTER TABLE ar_overrides ADD COLUMN ticket_priority TEXT",
+          "ALTER TABLE ar_overrides ADD COLUMN ticket_category TEXT",
+        ];
+        const results=[];
+        for(const sql of migrations){
+          try{await env.DB.prepare(sql).run();results.push({sql,status:'ok'})}
+          catch(e){results.push({sql,status:'skipped',error:e.message})}
+        }
+        return json({results});
+      }
+
+      // Trade loan individual operations
+      if(path.startsWith('/api/trade-loans/')&&method==='DELETE'){
+        const id=parseInt(path.split('/').pop());
+        await env.DB.prepare('DELETE FROM trade_loans WHERE id=?').bind(id).run();
+        return json({success:true});
+      }
+      if(path.startsWith('/api/trade-loans/')&&method==='PUT'){
+        const id=parseInt(path.split('/').pop()), body=await request.json();
+        await env.DB.prepare('UPDATE trade_loans SET reference=?,po_ref=?,outstanding=?,settlement=?,maturity_date=?,rate=?,entity_id=? WHERE id=?')
+          .bind(body.reference,body.po_ref,body.outstanding,body.settlement,body.maturity_date,body.rate,body.entity_id||'AU',id).run();
+        return json({success:true});
+      }
+      if(path==='/api/trade-loans'&&method==='POST'){
+        const body=await request.json();
+        const r=await env.DB.prepare('INSERT INTO trade_loans(entity_id,reference,po_ref,outstanding,settlement,maturity_date,rate) VALUES(?,?,?,?,?,?,?)')
+          .bind(body.entity_id||'AU',body.reference||'',body.po_ref||'',body.outstanding||0,body.settlement||0,body.maturity_date||'',body.rate||0).run();
+        return json({success:true,id:r.meta.last_row_id});
       }
 
       return json({error:`Not found: ${path}`},404);

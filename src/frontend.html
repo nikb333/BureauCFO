@@ -851,16 +851,81 @@ function App(){
               h("td",null,h("span",{className:"badge current"},"pending"))
             ))))
         ),
-        // Trade finance
-        tradeLoans.length>0&&h("div",{className:"card section"},
-          h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},"Trade Finance Maturities \u2014 AU"),
+        // Trade finance — editable with add/delete/CSV
+        h("div",{className:"card section"},
+          h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},
+            h("span",null,"Trade Finance Maturities \u2014 AU",h("span",{style:{fontSize:10,color:C.mid,marginLeft:8}},tradeLoans.length+" loans")),
+            h("div",{style:{display:"flex",gap:6,alignItems:"center"}},
+              h("label",{style:{fontSize:10,padding:"4px 10px",border:"1px solid #E0DFDB",borderRadius:4,cursor:"pointer",background:"#FAFAF8",color:C.steel}},
+                "Upload CSV",
+                h("input",{type:"file",accept:".csv",style:{display:"none"},onChange:ev=>{
+                  const file=ev.target.files[0];if(!file)return;const reader=new FileReader();
+                  reader.onload=e=>{const text=e.target.result,lines=text.split("\n").filter(l=>l.trim());
+                    if(lines.length<2)return;
+                    const hdr=lines[0].split(",").map(h=>h.trim().toLowerCase().replace(/[^a-z_]/g,''));
+                    const rows=lines.slice(1).map(l=>{const vals=l.split(",");const row={};hdr.forEach((h,i)=>row[h]=vals[i]?.trim()||'');return row});
+                    const loans=rows.filter(r=>r.outstanding_trade||r.outstanding||r.aud_equivalent_amount).map(r=>({
+                      entity_id:'AU',
+                      reference:r.bank_reference||r.reference||r.customer_reference||'',
+                      po_ref:r.customer_reference||r.po_ref||'',
+                      outstanding:parseFloat(r.outstanding_trade||r.outstanding||r.aud_equivalent_amount||0),
+                      maturity_date:r.expiry_maturity_date||r.expirymaturity_date||r.maturity_date||r.expiry||'',
+                      rate:parseFloat(r.interest_rate||r.rate||0)/100
+                    }));
+                    if(!loans.length)return;
+                    // Format dates: try to parse various formats
+                    loans.forEach(l=>{if(l.maturity_date&&l.maturity_date.includes('/')){
+                      const p=l.maturity_date.split('/');
+                      if(p.length===3) l.maturity_date=p[2]+'-'+p[1].padStart(2,'0')+'-'+p[0].padStart(2,'0')}
+                      l.settlement=Math.round(l.outstanding*(1+l.rate/2))});
+                    setSaving(true);
+                    fetch('/api/inputs/trade-loans',{method:'PUT',headers:{'Content-Type':'application/json'},
+                      body:JSON.stringify({replace_all:true,loans})})
+                      .then(()=>fetch('/api/trade-loans').then(r=>r.json()))
+                      .then(d=>{setTradeLoans(d.loans||[]);setSaving(false)})
+                      .catch(()=>setSaving(false))};
+                  reader.readAsText(file);ev.target.value=''}})),
+              h("button",{style:{fontSize:10,padding:"4px 10px",border:"1px solid #E0DFDB",borderRadius:4,cursor:"pointer",background:"#E2F5EC",color:C.ok},
+                onClick:()=>{
+                  fetch('/api/trade-loans',{method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({entity_id:'AU',reference:'',po_ref:'',outstanding:0,settlement:0,maturity_date:'',rate:0.0588})})
+                    .then(r=>r.json()).then(()=>fetch('/api/trade-loans').then(r=>r.json()))
+                    .then(d=>setTradeLoans(d.loans||[]))}},"+ Add Row"))),
+          h("div",{style:{fontSize:9,color:C.mid,padding:"4px 12px"}},"Settlement = Outstanding \u00d7 (1 + Rate/2). Edit any cell \u2014 saves on blur. Upload CSV to replace all rows."),
           h("table",null,
-            h("thead",null,h("tr",null,["Reference","PO","Outstanding","Settlement","Maturity","Rate"].map(x=>h("th",{key:x},x)))),
-            h("tbody",null,tradeLoans.map(l=>h("tr",{key:l.id},
-              h("td",{style:{fontSize:10}},l.reference),h("td",{style:{color:C.mid}},l.po_ref),
-              h("td",null,fmtF(l.outstanding)),h("td",{style:{fontWeight:600,color:C.bad}},fmtF(l.settlement)),
-              h("td",{style:{fontSize:10}},dateFmt(l.maturity_date)),h("td",{style:{color:C.mid}},l.rate?(l.rate*100).toFixed(1)+"%":"\u2014")
-            ))))
+            h("thead",null,h("tr",null,["Reference","PO/Customer Ref","Outstanding (A$)","Rate %","Settlement (A$)","Maturity",""].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
+            h("tbody",null,tradeLoans.map(l=>{
+              const calcSettlement=(out,rate)=>Math.round(out*(1+(rate||0)/2));
+              const saveRow=(field,val)=>{
+                const upd={...l,[field]:val};
+                if(field==='outstanding'||field==='rate') upd.settlement=calcSettlement(field==='outstanding'?val:l.outstanding,field==='rate'?val:l.rate);
+                fetch('/api/trade-loans/'+l.id,{method:'PUT',headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify(upd)})
+                  .then(()=>fetch('/api/trade-loans').then(r=>r.json()))
+                  .then(d=>setTradeLoans(d.loans||[]))};
+              return h("tr",{key:l.id},
+                h("td",null,h("input",{type:"text",defaultValue:l.reference||'',style:{fontSize:10,width:120,padding:"3px 6px",border:"1px solid #E0DFDB",borderRadius:3},
+                  onBlur:e=>saveRow('reference',e.target.value)})),
+                h("td",null,h("input",{type:"text",defaultValue:l.po_ref||'',style:{fontSize:10,width:100,padding:"3px 6px",border:"1px solid #E0DFDB",borderRadius:3},
+                  onBlur:e=>saveRow('po_ref',e.target.value)})),
+                h("td",null,h("input",{type:"number",defaultValue:l.outstanding||0,style:{fontSize:11,fontWeight:600,width:100,padding:"3px 6px",border:"1px solid #E0DFDB",borderRadius:3,textAlign:"right"},
+                  onBlur:e=>saveRow('outstanding',parseFloat(e.target.value)||0)})),
+                h("td",null,h("input",{type:"number",defaultValue:l.rate?+(l.rate*100).toFixed(2):0,step:0.01,style:{fontSize:11,width:60,padding:"3px 6px",border:"1px solid #E0DFDB",borderRadius:3,textAlign:"center"},
+                  onBlur:e=>saveRow('rate',parseFloat(e.target.value)/100||0)})),
+                h("td",{style:{fontWeight:600,color:C.bad,fontSize:11}},fmtC(calcSettlement(l.outstanding,l.rate),'AU')),
+                h("td",null,h("input",{type:"date",defaultValue:l.maturity_date||'',style:{fontSize:10,padding:"3px 6px",border:"1px solid #E0DFDB",borderRadius:3},
+                  onBlur:e=>saveRow('maturity_date',e.target.value)})),
+                h("td",{style:{textAlign:"center"}},h("button",{style:{fontSize:10,color:C.bad,background:"none",border:"none",cursor:"pointer",padding:"2px 6px"},
+                  onClick:()=>{if(confirm('Delete this loan?'))fetch('/api/trade-loans/'+l.id,{method:'DELETE'})
+                    .then(()=>fetch('/api/trade-loans').then(r=>r.json()))
+                    .then(d=>setTradeLoans(d.loans||[]))}},"\u2715"))
+              )})),
+            h("tfoot",null,h("tr",{style:{borderTop:"2px solid "+C.steel,background:"#F5F4F0"}},
+              h("td",{colSpan:2,style:{fontWeight:700,fontSize:10}},"Total"),
+              h("td",{style:{fontWeight:700,textAlign:"right",fontSize:11}},fmtC(tradeLoans.reduce((s,l)=>s+(l.outstanding||0),0),'AU')),
+              h("td",null),
+              h("td",{style:{fontWeight:700,color:C.bad,fontSize:11}},fmtC(tradeLoans.reduce((s,l)=>s+Math.round((l.outstanding||0)*(1+(l.rate||0)/2)),0),'AU')),
+              h("td",{colSpan:2}))))
         )
       ),
 
