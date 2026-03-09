@@ -862,21 +862,26 @@ function App(){
                   const file=ev.target.files[0];if(!file)return;const reader=new FileReader();
                   reader.onload=e=>{const text=e.target.result,lines=text.split("\n").filter(l=>l.trim());
                     if(lines.length<2)return;
-                    const hdr=lines[0].split(",").map(h=>h.trim().toLowerCase().replace(/[^a-z_]/g,''));
-                    const rows=lines.slice(1).map(l=>{const vals=l.split(",");const row={};hdr.forEach((h,i)=>row[h]=vals[i]?.trim()||'');return row});
-                    const loans=rows.filter(r=>r.outstanding_trade||r.outstanding||r.aud_equivalent_amount).map(r=>({
+                    // Normalize headers: lowercase, replace all non-alpha with nothing for flexible matching
+                    const rawHdr=lines[0].split(",").map(h=>h.trim());
+                    const hdr=rawHdr.map(h=>h.toLowerCase().replace(/[^a-z]/g,''));
+                    const find=(row,...keys)=>{for(const k of keys){const idx=hdr.findIndex(h=>h.includes(k));if(idx>=0&&row[idx]?.trim())return row[idx].trim()}return ''};
+                    const rows=lines.slice(1).map(l=>l.split(","));
+                    const loans=rows.filter(r=>find(r,'outstandingtrade','outstanding','audequivalent')).map(r=>({
                       entity_id:'AU',
-                      reference:r.bank_reference||r.reference||r.customer_reference||'',
-                      po_ref:r.customer_reference||r.po_ref||'',
-                      outstanding:parseFloat(r.outstanding_trade||r.outstanding||r.aud_equivalent_amount||0),
-                      maturity_date:r.expiry_maturity_date||r.expirymaturity_date||r.maturity_date||r.expiry||'',
-                      rate:parseFloat(r.interest_rate||r.rate||0)/100
+                      reference:find(r,'bankreference','reference'),
+                      po_ref:find(r,'customerreference','poref'),
+                      outstanding:parseFloat(find(r,'outstandingtrade','outstanding','audequivalent'))||0,
+                      maturity_date:find(r,'expirymaturity','maturitydate','expiry'),
+                      rate:parseFloat(find(r,'interestrate','rate'))||0
                     }));
-                    if(!loans.length)return;
-                    // Format dates: try to parse various formats
-                    loans.forEach(l=>{if(l.maturity_date&&l.maturity_date.includes('/')){
-                      const p=l.maturity_date.split('/');
-                      if(p.length===3) l.maturity_date=p[2]+'-'+p[1].padStart(2,'0')+'-'+p[0].padStart(2,'0')}
+                    if(!loans.length){alert('No valid rows found in CSV. Check column headers.');return}
+                    // Normalize: rate as decimal if >1 (e.g. 5.88 -> 0.0588), dates dd/mm/yyyy -> yyyy-mm-dd
+                    loans.forEach(l=>{
+                      if(l.rate>1) l.rate=l.rate/100;
+                      if(l.maturity_date&&l.maturity_date.includes('/')){
+                        const p=l.maturity_date.split('/');
+                        if(p.length===3) l.maturity_date=p[2]+'-'+p[1].padStart(2,'0')+'-'+p[0].padStart(2,'0')}
                       l.settlement=Math.round(l.outstanding*(1+l.rate/2))});
                     setSaving(true);
                     fetch('/api/inputs/trade-loans',{method:'PUT',headers:{'Content-Type':'application/json'},
