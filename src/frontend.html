@@ -676,12 +676,11 @@ function App(){
         h("div",{className:"card section"},
           h("div",{className:"card-hdr"},h("span",null,"Bank Accounts & Amex Balances"),h("span",{style:{fontSize:10,color:C.mid}},"Edit any balance \u2014 saves on blur, waterfall recalculates")),
           h("div",{className:"grid-4",style:{padding:12}},
-            (entities||[]).map(e=>h("div",{key:e.id,style:{padding:12,borderRadius:6,border:"1px solid #E8E7E3",borderTop:"3px solid "+C.ent[e.id],background:C.entBg[e.id]}},
-              h("div",{style:{fontSize:12,fontWeight:700,color:C.ent[e.id],marginBottom:10}},e.id+" \u00b7 "+e.currency),
-              (e.bank_accounts||[]).map(ba=>h("div",{key:ba.id,style:{marginBottom:8}},
-                h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}},
-                  h("span",{style:{fontSize:9,color:C.mid}},ba.name),
-                  ba.type==='credit'&&h("span",{style:{fontSize:8,padding:"1px 5px",borderRadius:3,background:"#FDE8E8",color:C.bad}},"CREDIT")),
+            (entities||[]).map(e=>{
+              const cashAccts=(e.bank_accounts||[]).filter(b=>b.type!=='credit');
+              const creditAccts=(e.bank_accounts||[]).filter(b=>b.type==='credit');
+              const renderAcct=ba=>h("div",{key:ba.id,style:{marginBottom:8}},
+                h("div",{style:{fontSize:9,color:C.mid,marginBottom:2}},ba.name),
                 h("div",{style:{display:"flex",alignItems:"center",gap:4}},
                   h("span",{style:{fontSize:11,color:C.mid}},(CURR[e.id]||{s:'$'}).s),
                   h("input",{type:"number",defaultValue:ba.balance||0,style:{fontSize:13,fontWeight:600,padding:"4px 8px",border:"1px solid #E0DFDB",borderRadius:4,background:"#fff",width:"100%",fontFamily:"DM Sans"},
@@ -690,10 +689,18 @@ function App(){
                       fetch("/api/banks/"+ba.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({balance:newVal})})
                       .then(()=>Promise.all([fetch('/api/entities').then(r=>r.json()),fetch('/api/waterfall?scenarios=1,2').then(r=>r.json())]))
                       .then(([ent,wf])=>{setEntities(ent.entities||[]);setWaterfall(wf);setSaving(false)})
-                      .catch(()=>setSaving(false))}}}))
-              ))
-            ))
-          )
+                      .catch(()=>setSaving(false))}}})
+                ));
+              return h("div",{key:e.id,style:{padding:12,borderRadius:6,border:"1px solid #E8E7E3",borderTop:"3px solid "+C.ent[e.id],background:C.entBg[e.id]}},
+                h("div",{style:{fontSize:12,fontWeight:700,color:C.ent[e.id],marginBottom:10}},e.id+" \u00b7 "+e.currency),
+                cashAccts.length>0&&h("div",{style:{marginBottom:creditAccts.length?10:0}},
+                  h("div",{style:{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",color:C.steel,marginBottom:6,paddingBottom:4,borderBottom:"1px solid #E0DFDB"}},"Cash Accounts"),
+                  cashAccts.map(renderAcct)),
+                creditAccts.length>0&&h("div",null,
+                  h("div",{style:{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.5px",color:C.bad,marginBottom:6,paddingBottom:4,borderBottom:"2px solid #FDE8E8",display:"flex",alignItems:"center",gap:6}},"Amex / Credit Cards",h("span",{style:{fontSize:8,padding:"1px 5px",borderRadius:3,background:"#FDE8E8",color:C.bad,fontWeight:600}},"PAYOFF")),
+                  creditAccts.map(renderAcct))
+              )})
+          ))
         ),
         // Payroll & Marketing
         h(PayrollTable,{config:inputs.entity_config,settings:inputs.settings,
