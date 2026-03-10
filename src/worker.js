@@ -349,6 +349,7 @@ export default {
         if(body.notes_updated_by!==undefined){sets.push('notes_updated_by=?');vals.push(body.notes_updated_by)}
         sets.push("notes_updated_at=datetime('now')");
         if(body.due_date!==undefined){sets.push('due_date=?');vals.push(body.due_date)}
+        if(body.payment_date_override!==undefined){sets.push('payment_date_override=?');vals.push(body.payment_date_override||null)}
         if(body.amount!==undefined){sets.push('amount=?');vals.push(body.amount)}
         vals.push(id);
         await env.DB.prepare('UPDATE ap_overrides SET '+sets.join(',')+' WHERE id=?').bind(...vals).run();
@@ -562,6 +563,7 @@ export default {
           "ALTER TABLE ar_overrides ADD COLUMN ticket_priority TEXT",
           "ALTER TABLE ar_overrides ADD COLUMN ticket_category TEXT",
           "ALTER TABLE ar_overrides ADD COLUMN invoice_number TEXT",
+          "ALTER TABLE ap_overrides ADD COLUMN payment_date_override TEXT",
           `CREATE TABLE IF NOT EXISTS syft_ar_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_id TEXT NOT NULL,

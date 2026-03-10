@@ -526,7 +526,6 @@ function App(){
   const [error,setError]=us(null);
   const [saving,setSaving]=us(false);
   const [arSub,setArSub]=us("summary");
-  const [apSub,setApSub]=us("summary");
   const [apEntity,setApEntity]=us("ALL");
   const [syftAr,setSyftAr]=us([]);
 
@@ -963,167 +962,90 @@ function App(){
         const weekStarts=Array.from({length:11},(_,i)=>{const d=new Date(startDate);d.setDate(d.getDate()+i*7);return d});
         const weekEnds=weekStarts.map(ws=>{const we=new Date(ws);we.setDate(we.getDate()+6);return we});
         const weekLabel=i=>{const d=weekStarts[i];return d?d.toLocaleDateString('en-GB',{day:'numeric',month:'short'}):''};
-        const filtered=apEntity==="ALL"?ap:ap.filter(d=>d.entity_id===apEntity);
-        const totalAPusd=ap.reduce((s,d)=>s+toUSD(d.amount,d.entity_id),0);
-
-        // Assign each vendor to a week based on due_date
-        const assignWeek=(dueDate)=>{
-          if(!dueDate)return -1;
-          const dd=new Date(dueDate+'T00:00:00');
-          if(dd<weekStarts[0])return -1; // overdue / before week 1
-          for(let i=0;i<11;i++){if(dd>=weekStarts[i]&&dd<=weekEnds[i])return i}
-          return 11; // beyond week 11
+        const payDate=d=>d.payment_date_override||d.due_date;
+        const assignWeek=(d)=>{
+          const dd=payDate(d);
+          if(!dd)return -1;
+          const dt=new Date(dd+'T00:00:00');
+          if(dt<weekStarts[0])return -1;
+          for(let i=0;i<11;i++){if(dt>=weekStarts[i]&&dt<=weekEnds[i])return i}
+          return 11;
         };
-        // Build weekly schedule
+        const totalAPusd=ap.reduce((s,d)=>s+toUSD(d.amount,d.entity_id),0);
+        // Weekly totals for summary grid
         const weeklyByEntity={};const weeklyTotal=Array(11).fill(0);
         EIDs.forEach(eId=>{
           weeklyByEntity[eId]=Array(11).fill(0);
           ap.filter(d=>d.entity_id===eId).forEach(d=>{
-            const wk=assignWeek(d.due_date);
+            const wk=assignWeek(d);
             if(wk>=0&&wk<11){weeklyByEntity[eId][wk]+=d.amount;weeklyTotal[wk]+=toUSD(d.amount,eId)}
           });
         });
-        const overdueItems=filtered.filter(d=>assignWeek(d.due_date)<0);
-        const scheduledItems=filtered.filter(d=>{const w=assignWeek(d.due_date);return w>=0&&w<11});
-        const beyondItems=filtered.filter(d=>assignWeek(d.due_date)>=11);
-        const fc=(n,eId)=>fmtC(n,eId||"US");
 
-        const APSUBS=[{id:"summary",l:"Summary"},{id:"schedule",l:"Weekly Schedule"},{id:"vendors",l:"All Vendors ("+filtered.length+")"}];
+        // AP vendor row helper
+        const apRow=(d,showEntity)=>h("tr",{key:d.id},
+          showEntity&&h("td",null,h("span",{style:{fontSize:9,padding:"1px 5px",borderRadius:3,background:C.entBg[d.entity_id],color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
+          h("td",{style:{fontWeight:500}},d.vendor_name),
+          h("td",{style:{fontWeight:600,color:C.bad}},fmtC(d.amount,d.entity_id)),
+          showEntity&&h("td",{style:{fontSize:10,color:C.mid}},fmt(toUSD(d.amount,d.entity_id))),
+          h("td",{style:{fontSize:10,color:C.mid}},d.due_date?dateFmt(d.due_date):"—"),
+          h("td",null,h("input",{type:"date",defaultValue:d.payment_date_override||"",style:{fontSize:10,border:"1px solid "+(d.payment_date_override?"#3171F1":"#E0DFDB"),borderRadius:4,padding:"2px 4px",background:d.payment_date_override?"#EDF2FE":"#fff"},
+            title:d.payment_date_override?"Override: "+d.payment_date_override+(d.due_date?" (Syft: "+d.due_date+")":""):"Set payment date override",
+            onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({payment_date_override:ev.target.value||null})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],payment_date_override:ev.target.value||null};setAp(nd)})}})),
+          h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note...",style:{fontSize:10,minWidth:150,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
+            onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}}))
+        );
+        const apHeaders=(showEntity)=>h("tr",null,
+          showEntity&&h("th",{style:{fontSize:10}},"Entity"),
+          h("th",{style:{fontSize:10}},"Vendor"),h("th",{style:{fontSize:10}},"Amount"),
+          showEntity&&h("th",{style:{fontSize:10}},"USD"),
+          h("th",{style:{fontSize:10}},"Due Date (Syft)"),h("th",{style:{fontSize:10}},"Payment Date"),h("th",{style:{fontSize:10}},"Notes"));
+
+        const isSummary=apEntity==="ALL";
+        const filtered=isSummary?ap:ap.filter(d=>d.entity_id===apEntity);
+
         return h("div",{className:"content"},
-          h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
-            h("div",{style:{display:"flex",gap:6}},
-              APSUBS.map(s=>h("button",{key:s.id,className:"pill"+(apSub===s.id?" active":""),style:{"--c":C.bad},onClick:()=>setApSub(s.id)},s.l))
-            ),
-            h("div",{style:{display:"flex",gap:6}},
-              [{id:"ALL",l:"All Entities"},...EIDs.map(e=>({id:e,l:(entMap[e]||{}).label||e}))].map(e=>
-                h("button",{key:e.id,className:"pill"+(apEntity===e.id?" active":""),style:{"--c":e.id==="ALL"?C.steel:C.ent[e.id]},onClick:()=>setApEntity(e.id)},e.l))
-            )
+          // 5 pills: Summary + 4 entities
+          h("div",{style:{display:"flex",gap:6,marginBottom:14}},
+            [{id:"ALL",l:"Summary"},...EIDs.map(e=>({id:e,l:(entMap[e]||{}).label||e}))].map(e=>
+              h("button",{key:e.id,className:"pill"+(apEntity===e.id?" active":""),style:{"--c":e.id==="ALL"?C.bad:C.ent[e.id]},onClick:()=>setApEntity(e.id)},e.l))
           ),
 
-          // ── SUMMARY ──
-          apSub==="summary"&&h("div",null,
+          // ── SUMMARY VIEW ──
+          isSummary&&h("div",null,
             h("div",{className:"grid-4"},
               [{l:"Total AP (USD)",v:fmt(totalAPusd),s:ap.length+" vendors",c:C.bad},
                ...EIDs.map(eId=>{const eAP=ap.filter(d=>d.entity_id===eId);const tot=eAP.reduce((s,d)=>s+d.amount,0);
-                 return {l:eId+" AP",v:fmtC(tot,eId),s:eAP.length+" vendors · "+fmt(toUSD(tot,eId))+" USD",c:C.ent[eId]}})
+                 return {l:eId+" AP",v:fmtC(tot,eId),s:eAP.length+" vendors \u00b7 "+fmt(toUSD(tot,eId))+" USD",c:C.ent[eId]}})
               ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},
                 h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))
             ),
-            // Weekly totals bar chart
             h("div",{className:"card",style:{padding:16,marginTop:16}},
               h("div",{style:{fontSize:14,fontWeight:600,marginBottom:12}},"Weekly AP Outflows (USD)"),
               h("table",null,
-                h("thead",null,h("tr",null,h("th",null,"Entity"),weekStarts.slice(0,8).map((ws,i)=>h("th",{key:i,style:{textAlign:"right",fontSize:9}},weekLabel(i))))),
+                h("thead",null,h("tr",null,h("th",null,"Entity"),weekStarts.slice(0,8).map((_,i)=>h("th",{key:i,style:{textAlign:"right",fontSize:9}},weekLabel(i))))),
                 h("tbody",null,
                   EIDs.map(eId=>h("tr",{key:eId},
                     h("td",{style:{fontWeight:600,color:C.ent[eId],fontSize:11}},eId),
-                    weeklyByEntity[eId].slice(0,8).map((v,i)=>h("td",{key:i,style:{textAlign:"right",fontSize:11,color:v?C.bad:C.warm}},v?fmtC(v,eId):"—"))
+                    weeklyByEntity[eId].slice(0,8).map((v,i)=>h("td",{key:i,style:{textAlign:"right",fontSize:11,color:v?C.bad:C.warm}},v?fmtC(v,eId):"\u2014"))
                   )),
                   h("tr",{style:{borderTop:"2px solid #E8E7E3",fontWeight:700}},
                     h("td",null,"Total USD"),
-                    weeklyTotal.slice(0,8).map((v,i)=>h("td",{key:i,style:{textAlign:"right",color:v?C.bad:C.warm}},v?fmt(v):"—"))
+                    weeklyTotal.slice(0,8).map((v,i)=>h("td",{key:i,style:{textAlign:"right",color:v?C.bad:C.warm}},v?fmt(v):"\u2014"))
                   )
                 )
-              )
-            ),
-            // Status breakdown
-            h("div",{className:"card",style:{padding:16,marginTop:16}},
-              h("div",{style:{fontSize:14,fontWeight:600,marginBottom:12}},"Status Breakdown"),
-              h("div",{className:"grid-4"},
-                ["pending","hold","investigating","approved","paid"].map(st=>{
-                  const items=ap.filter(d=>((d.ap_status||"pending")===st));
-                  const tot=items.reduce((s,d)=>s+toUSD(d.amount,d.entity_id),0);
-                  return h("div",{key:st,className:"card",style:{padding:12,background:st==="hold"?"#FEF3D6":st==="paid"?"#E2F5EC":st==="investigating"?"#EDF2FE":"#FAFAF8"}},
-                    h("div",{style:{fontSize:11,fontWeight:600,textTransform:"capitalize"}},st),
-                    h("div",{style:{fontSize:16,fontWeight:700}},fmt(tot)),
-                    h("div",{style:{fontSize:10,color:C.mid}},items.length+" vendors"))
-                })
               )
             )
           ),
 
-          // ── WEEKLY SCHEDULE ──
-          apSub==="schedule"&&h("div",null,
-            // Overdue
-            overdueItems.length>0&&h("div",{className:"card section",style:{marginBottom:16}},
-              h("div",{className:"card-hdr",style:{color:"#fff",background:C.bad}},
-                h("span",null,"Overdue / No Date ("+overdueItems.length+")"),
-                h("span",null,fmt(overdueItems.reduce((s,d)=>s+toUSD(d.amount,d.entity_id),0)))),
-              h("table",null,
-                h("thead",null,h("tr",null,["Entity","Vendor","Amount","Amount (USD)","Due Date","Status","Notes"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
-                h("tbody",null,overdueItems.sort((a,b)=>toUSD(b.amount,b.entity_id)-toUSD(a.amount,a.entity_id)).map(d=>
-                  h("tr",{key:d.id},
-                    h("td",null,h("span",{style:{fontSize:9,padding:"1px 5px",borderRadius:3,background:C.entBg[d.entity_id],color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
-                    h("td",{style:{fontWeight:500}},d.vendor_name),
-                    h("td",{style:{fontWeight:600,color:C.bad}},fmtC(d.amount,d.entity_id)),
-                    h("td",{style:{fontSize:10,color:C.mid}},fmt(toUSD(d.amount,d.entity_id))),
-                    h("td",null,h("input",{type:"date",defaultValue:d.due_date||"",style:{fontSize:10,border:"1px solid #E0DFDB",borderRadius:4,padding:"2px 4px"},
-                      onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({due_date:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],due_date:ev.target.value};setAp(nd)})}})),
-                    h("td",null,h("select",{value:d.ap_status||"pending",style:{fontSize:10,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3,background:d.ap_status==="hold"?"#FEF3D6":d.ap_status==="paid"?"#E2F5EC":d.ap_status==="investigating"?"#EDF2FE":"#fff"},
-                      onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({ap_status:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],ap_status:ev.target.value};setAp(nd)})}},
-                      ["pending","hold","investigating","approved","paid"].map(o=>h("option",{key:o,value:o},o)))),
-                    h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note...",style:{fontSize:10,minWidth:160,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
-                      onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}}))
-                  )
-                ))
-              )
-            ),
-            // Each week
-            Array.from({length:8},(_,wi)=>{
-              const wkItems=filtered.filter(d=>assignWeek(d.due_date)===wi);
-              if(wkItems.length===0)return h("div",{key:wi,className:"card section",style:{marginBottom:8,opacity:0.5}},
-                h("div",{className:"card-hdr",style:{color:C.mid,background:"#F0EFEB"}},
-                  h("span",null,weekLabel(wi)),h("span",null,"—")));
-              const wkTotal=wkItems.reduce((s,d)=>s+toUSD(d.amount,d.entity_id),0);
-              return h("div",{key:wi,className:"card section",style:{marginBottom:8}},
-                h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},
-                  h("span",null,weekLabel(wi)+" ("+wkItems.length+" vendors)"),
-                  h("span",null,fmt(wkTotal)+" USD")),
-                h("table",null,
-                  h("thead",null,h("tr",null,["Entity","Vendor","Amount","Amount (USD)","Due Date","Status","Notes"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
-                  h("tbody",null,wkItems.sort((a,b)=>toUSD(b.amount,b.entity_id)-toUSD(a.amount,a.entity_id)).map(d=>
-                    h("tr",{key:d.id},
-                      h("td",null,h("span",{style:{fontSize:9,padding:"1px 5px",borderRadius:3,background:C.entBg[d.entity_id],color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
-                      h("td",{style:{fontWeight:500}},d.vendor_name),
-                      h("td",{style:{fontWeight:600,color:C.bad}},fmtC(d.amount,d.entity_id)),
-                      h("td",{style:{fontSize:10,color:C.mid}},fmt(toUSD(d.amount,d.entity_id))),
-                      h("td",null,h("input",{type:"date",defaultValue:d.due_date||"",style:{fontSize:10,border:"1px solid #E0DFDB",borderRadius:4,padding:"2px 4px"},
-                        onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({due_date:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],due_date:ev.target.value};setAp(nd)})}})),
-                      h("td",null,h("select",{value:d.ap_status||"pending",style:{fontSize:10,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3,background:d.ap_status==="hold"?"#FEF3D6":d.ap_status==="paid"?"#E2F5EC":d.ap_status==="investigating"?"#EDF2FE":"#fff"},
-                        onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({ap_status:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],ap_status:ev.target.value};setAp(nd)})}},
-                        ["pending","hold","investigating","approved","paid"].map(o=>h("option",{key:o,value:o},o)))),
-                      h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note...",style:{fontSize:10,minWidth:160,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
-                        onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}}))
-                    )
-                  ))
-                )
-              )
-            })
-          ),
-
-          // ── ALL VENDORS ──
-          apSub==="vendors"&&h("div",{className:"card section"},
-            h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},
-              h("span",null,"All Vendors ("+filtered.length+")"),
-              h("span",null,fmt(filtered.reduce((s,d)=>s+toUSD(d.amount,d.entity_id),0))+" USD")),
-            h("table",null,
-              h("thead",null,h("tr",null,["Entity","Vendor","Amount","Amount (USD)","Due Date","Status","Notes","Updated"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
-              h("tbody",null,filtered.sort((a,b)=>toUSD(b.amount,b.entity_id)-toUSD(a.amount,a.entity_id)).map(d=>
-                h("tr",{key:d.id},
-                  h("td",null,h("span",{style:{fontSize:9,padding:"1px 5px",borderRadius:3,background:C.entBg[d.entity_id],color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
-                  h("td",{style:{fontWeight:500}},d.vendor_name),
-                  h("td",{style:{fontWeight:600,color:C.bad}},fmtC(d.amount,d.entity_id)),
-                  h("td",{style:{fontSize:10,color:C.mid}},fmt(toUSD(d.amount,d.entity_id))),
-                  h("td",null,h("input",{type:"date",defaultValue:d.due_date||"",style:{fontSize:10,border:"1px solid #E0DFDB",borderRadius:4,padding:"2px 4px"},
-                    onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({due_date:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],due_date:ev.target.value};setAp(nd)})}})),
-                  h("td",null,h("select",{value:d.ap_status||"pending",style:{fontSize:10,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3,background:d.ap_status==="hold"?"#FEF3D6":d.ap_status==="paid"?"#E2F5EC":d.ap_status==="investigating"?"#EDF2FE":"#fff"},
-                    onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({ap_status:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],ap_status:ev.target.value};setAp(nd)})}},
-                    ["pending","hold","investigating","approved","paid"].map(o=>h("option",{key:o,value:o},o)))),
-                  h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note...",style:{fontSize:10,minWidth:160,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
-                    onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}})),
-                  h("td",{style:{fontSize:9,color:C.warm,maxWidth:80}},d.notes_updated_at?dateFmt(d.notes_updated_at.slice(0,10))+(d.notes_updated_by?" · "+d.notes_updated_by:""):"")
-                )
-              ))
+          // ── ENTITY VIEW ──
+          !isSummary&&h("div",null,
+            h("div",{className:"card section"},
+              h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},
+                h("span",null,"AP \u2014 "+(entMap[apEntity]?.label||apEntity)+" ("+filtered.length+")"),
+                h("span",null,fmtC(filtered.reduce((s,d)=>s+d.amount,0),apEntity))),
+              h("table",null,h("thead",null,apHeaders(false)),
+                h("tbody",null,filtered.sort((a,b)=>b.amount-a.amount).map(d=>apRow(d,false))))
             )
           )
         )
@@ -1239,20 +1161,22 @@ function App(){
                       h("span",{style:{color:s.date?(s.date<today?C.bad:C.steel):C.warn,fontWeight:s.date&&s.date<today?600:400}},s.date?dateFmt(s.date):"TBD")))),
                     h("td",{style:{width:20}},h("a",{href:hsLink(d.hubspot_deal_id),target:"_blank",style:{fontSize:10,color:C.blue,textDecoration:"none"},title:"Open in HubSpot"},"\u2197")),
                     h("td",null,h("span",{className:"badge "+(isOverdue?"overdue":d.status||"current")},isOverdue?"overdue":d.status||"current")))}))))})(),
-          // AP table with notes
-          eAP.length>0&&h("div",{className:"card section"},h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8",cursor:"pointer"},onClick:()=>{setApEntity(eTab);setApSub("vendors");setTab("ap")}},h("span",null,"Accounts Payable ",h("span",{style:{fontSize:9,opacity:0.7}},"View in AP Schedule \u2192")),h("span",null,fc(eAP.reduce((s,d)=>s+d.amount,0)))),
-            h("table",null,h("thead",null,h("tr",null,["Vendor","Amount","Due Date","Status","Notes","Updated",""].map(x=>h("th",{key:x},x)))),
-              h("tbody",null,eAP.map(d=>h("tr",{key:d.id},
+          // AP table
+          eAP.length>0&&h("div",{className:"card section"},
+            h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},
+              h("span",null,"Accounts Payable ("+eAP.length+")"),
+              h("span",null,fc(eAP.reduce((s,d)=>s+d.amount,0)))),
+            h("table",null,
+              h("thead",null,h("tr",null,["Vendor","Amount","Due Date (Syft)","Payment Date","Notes"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
+              h("tbody",null,eAP.sort((a,b)=>b.amount-a.amount).map(d=>h("tr",{key:d.id},
                 h("td",{style:{fontWeight:500}},d.vendor_name),
                 h("td",{style:{fontWeight:600,color:C.bad}},fc(d.amount)),
-                h("td",{style:{fontSize:10}},d.due_date?dateFmt(d.due_date):"—"),
-                h("td",null,h("select",{value:d.ap_status||"pending",style:{fontSize:10,padding:"2px 4px",border:"1px solid #E0DFDB",borderRadius:3,background:d.ap_status==="hold"?"#FEF3D6":d.ap_status==="paid"?"#E2F5EC":d.ap_status==="investigating"?"#EDF2FE":"#fff"},
-                  onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({ap_status:ev.target.value})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],ap_status:ev.target.value};setAp(nd)})}},
-                  ["pending","hold","investigating","approved","paid"].map(o=>h("option",{key:o,value:o},o)))),
-                h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note for team...",style:{fontSize:10,minWidth:180,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
-                  onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}})),
-                h("td",{style:{fontSize:9,color:C.warm,maxWidth:80}},d.notes_updated_at?dateFmt(d.notes_updated_at.slice(0,10))+(d.notes_updated_by?" · "+d.notes_updated_by:""):""),
-                h("td",null,d.notes?h("span",{style:{fontSize:9,color:C.warn}},"\ud83d\udcac"):"")
+                h("td",{style:{fontSize:10,color:C.mid}},d.due_date?dateFmt(d.due_date):"\u2014"),
+                h("td",null,h("input",{type:"date",defaultValue:d.payment_date_override||"",style:{fontSize:10,border:"1px solid "+(d.payment_date_override?"#3171F1":"#E0DFDB"),borderRadius:4,padding:"2px 4px",background:d.payment_date_override?"#EDF2FE":"#fff"},
+                  title:d.payment_date_override?"Override: "+d.payment_date_override+(d.due_date?" (Syft: "+d.due_date+")":""):"Set payment date override",
+                  onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({payment_date_override:ev.target.value||null})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],payment_date_override:ev.target.value||null};setAp(nd)})}})),
+                h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note...",style:{fontSize:10,minWidth:150,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
+                  onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}})
               )))))
         )})(),
 
