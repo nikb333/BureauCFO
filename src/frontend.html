@@ -569,7 +569,7 @@ function App(){
   if(error)return h("div",{className:"loading",style:{color:C.bad}},"Error: "+error);
 
   const TABS=[{id:"overview",l:"Overview"},{id:"ar",l:"AR Chasing"},{id:"entity",l:"Entity Cashflow"},{id:"stock",l:"Stock Payments"},{id:"inputs",l:"Inputs"},{id:"scenarios",l:"Scenarios"}];
-  const lowestWk=waterfall?.consolidated?Math.min(...waterfall.consolidated.map(w=>w.withStock)):0;
+  const lowestWk=waterfall?.consolidated?Math.min(...waterfall.consolidated.filter(w=>w.week!=='Today').map(w=>w.withStock)):0;
 
   return h("div",null,
     // Header
@@ -985,7 +985,7 @@ function App(){
           // Entity chart
           eWF&&h("div",{className:"card section"},
             h("div",{className:"card-hdr"},"Cash Forecast \u2014 "+(e?.currency||"")),
-            (()=>{const wks=eWF.weeks.slice(0,8),W=900,H=180,pad={t:20,r:20,b:30,l:70},cw=W-pad.l-pad.r,ch=H-pad.t-pad.b;
+            (()=>{const rawWks=eWF.weeks.slice(0,8),openPt={week:'Today',close:eWF.openingCash,closeExStock:eWF.openingCash},wks=[openPt,...rawWks],W=900,H=180,pad={t:20,r:20,b:30,l:70},cw=W-pad.l-pad.r,ch=H-pad.t-pad.b;
               const vals=wks.flatMap(w=>[w.close,w.closeExStock]);
               const mn=Math.min(...vals)*1.1,mx=Math.max(...vals)*1.05,rng=mx-mn||1;
               const xp=i=>pad.l+(i/(wks.length-1))*cw,yp=v=>pad.t+ch-((v-mn)/rng)*ch;

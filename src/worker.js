@@ -161,7 +161,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const schedPmts=inputs.scheduled[eId]||[];
 
   const weekData=[];
-  let bal=openingCash;
+  let bal=openingCash, cumStock=0;
 
   for(let w=0;w<N;w++){
     const wk=weeks[w], open=bal;
@@ -264,7 +264,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
       amexPayoff:Math.round(amexPayoff), stock:Math.round(stockOut), trade:Math.round(tradeOut),
       scheduled:Math.round(scheduledOut), rent:Math.round(rent), misc:Math.round(misc),
       diCogs:Math.round(installCosts), invRepl:Math.round(stockRepl), totOut:Math.round(totOut),
-      close:Math.round(bal), closeExStock:Math.round(bal+stockOut),
+      close:Math.round(bal), closeExStock:Math.round(bal+(cumStock+=stockOut)),
       arDetails, apDetails:apVendorsByWeek[w]||[], scheduledDetails,
     });
   }
@@ -273,6 +273,10 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
 
 function calcConsolidated(results) {
   const N=results[0]?.weeks?.length||11, out=[];
+  // Opening point = today's cash position
+  let openUSD=0;
+  for(const r of results) openUSD+=r.openingCash*r.fxRate;
+  out.push({week:'Today',withStock:Math.round(openUSD),exStock:Math.round(openUSD)});
   for(let w=0;w<N;w++){
     let ws=0,es=0; const label=results[0]?.weeks[w]?.week||`Wk${w+1}`;
     for(const r of results){ const wk=r.weeks[w]; if(!wk)continue; ws+=wk.close*r.fxRate; es+=wk.closeExStock*r.fxRate; }
