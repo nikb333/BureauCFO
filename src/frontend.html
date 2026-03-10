@@ -526,6 +526,7 @@ function App(){
   const [error,setError]=us(null);
   const [saving,setSaving]=us(false);
   const [arSub,setArSub]=us("summary");
+  const [syftAr,setSyftAr]=us([]);
 
   const load=()=>{
     Promise.all([
@@ -537,10 +538,11 @@ function App(){
       fetch('/api/waterfall?scenarios=1,2').then(r=>r.json()),
       fetch('/api/inputs').then(r=>r.json()),
       fetch('/api/scenarios').then(r=>r.json()),
-    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc])=>{
+      fetch('/api/syft-ar').then(r=>r.json()).catch(()=>({items:[]})),
+    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
       setStockPOs(poD.orders||[]);setTradeLoans(lnD.loans||[]);
-      setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setLoading(false);
+      setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setLoading(false);
     }).catch(e=>{setError(e.message);setLoading(false)});
   };
   ue(load,[]);
@@ -685,7 +687,7 @@ function App(){
           );
         };
 
-        const ARSUBS=[{id:"summary",l:"Summary"},{id:"definite",l:"Definite ("+definite.length+")"},{id:"proposed",l:"Proposed ("+proposed.length+")"},{id:"missing",l:"Missing Inv ("+missingInv.length+")"},{id:"justclosed",l:"Just Closed ("+justClosed.length+")"}];
+        const ARSUBS=[{id:"summary",l:"Summary"},{id:"definite",l:"Definite ("+definite.length+")"},{id:"proposed",l:"Proposed ("+proposed.length+")"},{id:"missing",l:"Missing Inv ("+missingInv.length+")"},{id:"justclosed",l:"Just Closed ("+justClosed.length+")"},{id:"recon",l:"Reconciliation"}];
 
         return h("div",null,
           h("div",{style:{display:"flex",gap:6,marginBottom:14}},
@@ -728,7 +730,226 @@ function App(){
 
           arSub==="justclosed"&&h("div",{className:"card"},
             h("div",{className:"card-hdr",style:{color:C.blue,background:"#EDF2FE"}},h("span",null,"Just Closed — Last 3 Days"),h("span",null,justClosed.length+" deals")),
-            DealTable(justClosed))
+            DealTable(justClosed)),
+
+          // ═══ RECONCILIATION SUB-TAB ═══
+          arSub==="recon"&&(()=>{
+            const EIDs=["US","CA","UK","AU"];
+            const syftRecon=waterfall?Object.fromEntries(Object.entries(waterfall.entities||{}).map(([k,v])=>([k,{ar_total:v.arTotal}]))):{};
+
+            // Auto-match: try invoice_number first, then fuzzy name+amount
+            const normalize=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+            const matchScore=(syftItem,deal)=>{
+              // Exact invoice number match
+              if(syftItem.invoice_number&&deal.invoice_number&&normalize(syftItem.invoice_number)===normalize(deal.invoice_number)) return 100;
+              // Name similarity + amount within 5%
+              const sName=normalize(syftItem.customer_name), dName=normalize(deal.deal_name);
+              let nameMatch=0;
+              if(sName&&dName){if(sName.includes(dName)||dName.includes(sName)) nameMatch=60;
+                else{const words=sName.split(/\s+/);const dWords=dName.split(/\s+/);const common=words.filter(w=>w.length>2&&dWords.some(dw=>dw.includes(w)));nameMatch=common.length?Math.min(50,common.length*15):0}}
+              const amtDiff=Math.abs((syftItem.outstanding||0)-(deal.outstanding||0));
+              const amtMatch=amtDiff<Math.max(syftItem.outstanding||1,1)*0.05?30:amtDiff<Math.max(syftItem.outstanding||1,1)*0.15?15:0;
+              return nameMatch+amtMatch;
+            };
+
+            // Group Syft items by entity
+            const syftByE={};EIDs.forEach(e=>{syftByE[e]=syftAr.filter(s=>s.entity_id===e)});
+            const dealsByE={};EIDs.forEach(e=>{dealsByE[e]=unpaid.filter(d=>d.entity_id===e)});
+
+            // Auto-match each Syft item to best deal
+            const autoMatches={};
+            EIDs.forEach(e=>{
+              const available=new Set(dealsByE[e].map(d=>d.id));
+              syftByE[e].forEach(si=>{
+                if(si.matched_deal_id){autoMatches[si.id]=si.matched_deal_id;available.delete(si.matched_deal_id);return}
+                let best=null,bestScore=0;
+                for(const d of dealsByE[e]){
+                  if(!available.has(d.id))continue;
+                  const sc=matchScore(si,d);
+                  if(sc>bestScore){bestScore=sc;best=d}
+                }
+                if(best&&bestScore>=40){autoMatches[si.id]=best.id;available.delete(best.id)}
+              });
+            });
+
+            // Classify
+            const matched=[],inSyftOnly=[],inHSOnly={};
+            EIDs.forEach(e=>{
+              const matchedDealIds=new Set();
+              syftByE[e].forEach(si=>{
+                const dealId=autoMatches[si.id];
+                if(dealId){const deal=dealsByE[e].find(d=>d.id===dealId);if(deal){matched.push({syft:si,deal,entity:e});matchedDealIds.add(dealId)}
+                } else {inSyftOnly.push({syft:si,entity:e})}
+              });
+              dealsByE[e].filter(d=>!matchedDealIds.has(d.id)).forEach(d=>{
+                if(!inHSOnly[e])inHSOnly[e]=[];inHSOnly[e].push(d);
+              });
+            });
+
+            // Totals per entity
+            const syftTotalByE={},hsTotalByE={},matchedTotalByE={},gapByE={};
+            EIDs.forEach(e=>{
+              syftTotalByE[e]=syftByE[e].reduce((s,i)=>s+(i.outstanding||0),0);
+              hsTotalByE[e]=dealsByE[e].reduce((s,d)=>s+(d.outstanding||0),0);
+              matchedTotalByE[e]=matched.filter(m=>m.entity===e).reduce((s,m)=>s+(m.syft.outstanding||0),0);
+              gapByE[e]=(syftRecon[e]?.ar_total||0)-hsTotalByE[e];
+            });
+
+            const fc=fmtC; // shorthand
+
+            return h("div",null,
+              // KPI summary
+              h("div",{className:"grid-4",style:{marginBottom:16}},
+                [{l:"Syft AR Total",v:fmtF(Math.round(EIDs.reduce((s,e)=>s+(syftRecon[e]?.ar_total||0)*(entMap[e]?.fx_rate||1),0))),s:"Accounting system",c:C.steel},
+                 {l:"HubSpot AR Total",v:fmtF(Math.round(unpaid.reduce((s,d)=>s+toUSD(d),0))),s:unpaid.length+" deals",c:C.blue},
+                 {l:"Gap (Syft \u2212 HS)",v:fmtF(Math.round(EIDs.reduce((s,e)=>s+gapByE[e]*(entMap[e]?.fx_rate||1),0))),s:"Not in HubSpot",c:C.warn},
+                 {l:"Syft Items Loaded",v:syftAr.length+"",s:matched.length+" matched, "+inSyftOnly.length+" unmatched",c:syftAr.length?C.ok:C.mid}
+                ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))),
+
+              // Per-entity gap
+              h("div",{className:"card",style:{marginBottom:16}},
+                h("div",{className:"card-hdr"},"AR Reconciliation by Entity"),
+                h("table",null,
+                  h("thead",null,h("tr",null,["Entity","Syft AR Total","HubSpot AR","Syft Items Loaded","Matched","Unmatched","Gap"].map(x=>h("th",{key:x,style:{textAlign:"right",padding:"6px 10px"}},x)))),
+                  h("tbody",null,EIDs.map(e=>h("tr",{key:e},
+                    h("td",{style:{fontWeight:600,color:C.ent[e],padding:"6px 10px"}},e),
+                    h("td",{style:{textAlign:"right",padding:"6px 10px"}},fc(syftRecon[e]?.ar_total||0,e)),
+                    h("td",{style:{textAlign:"right",padding:"6px 10px"}},fc(hsTotalByE[e],e)),
+                    h("td",{style:{textAlign:"right",padding:"6px 10px"}},syftByE[e].length||"\u2014"),
+                    h("td",{style:{textAlign:"right",padding:"6px 10px",color:C.ok}},matched.filter(m=>m.entity===e).length||"\u2014"),
+                    h("td",{style:{textAlign:"right",padding:"6px 10px",color:C.warn}},inSyftOnly.filter(m=>m.entity===e).length||"\u2014"),
+                    h("td",{style:{textAlign:"right",padding:"6px 10px",fontWeight:600,color:gapByE[e]>0?C.warn:C.ok}},fc(Math.round(gapByE[e]),e))
+                  )))
+                )
+              ),
+
+              // Upload CSV from Syft
+              h("div",{className:"card",style:{marginBottom:16}},
+                h("div",{className:"card-hdr"},h("span",null,"Upload Syft AR Report"),
+                  h("span",{style:{fontSize:10,color:C.mid}},"CSV from Syft AR Aging or AR Detail report")),
+                h("div",{style:{padding:12,display:"flex",gap:8,alignItems:"center"}},
+                  h("select",{id:"syft-ar-entity",style:{padding:"6px 10px",borderRadius:4,border:"1px solid #E8E7E3",fontFamily:"inherit"}},
+                    EIDs.map(e=>h("option",{key:e,value:e},e+" — "+(entMap[e]?.label||e)))),
+                  h("input",{type:"file",accept:".csv",style:{fontSize:11},onChange:ev=>{
+                    const file=ev.target.files[0];if(!file)return;
+                    const entitySel=document.getElementById("syft-ar-entity").value;
+                    const reader=new FileReader();
+                    reader.onload=fe=>{
+                      const text=fe.target.result,lines=text.split("\n").filter(l=>l.trim());
+                      if(lines.length<2)return;
+                      const parseCSV=line=>{const res=[];let cur='',inQ=false;
+                        for(let i=0;i<line.length;i++){const c=line[i];
+                          if(c==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++}else{inQ=!inQ}}
+                          else if(c===','&&!inQ){res.push(cur.trim());cur=''}
+                          else{cur+=c}}
+                        res.push(cur.trim());return res};
+                      // Auto-detect header: need 2+ of these keywords
+                      const hdrKeys=['customer','invoice','amount','outstanding','due','date','balance','aging','age','total','overdue'];
+                      let hdrIdx=0;
+                      for(let i=0;i<Math.min(lines.length,10);i++){
+                        const low=lines[i].toLowerCase();
+                        if(hdrKeys.filter(k=>low.includes(k)).length>=2){hdrIdx=i;break}}
+                      const hdr=parseCSV(lines[hdrIdx]).map(h=>h.toLowerCase().replace(/[^a-z0-9]/g,''));
+                      const pn=s=>{if(!s)return 0;return parseFloat(s.replace(/[$,%\s£A\u20AC]/g,'').replace(/,/g,''))||0};
+                      const find=(row,...keys)=>{for(const k of keys){const idx=hdr.findIndex(h=>h.includes(k));if(idx>=0&&row[idx]?.trim())return row[idx].trim()}return ''};
+                      const parseDate=s=>{if(!s)return '';
+                        if(s.includes('/')){const p=s.split('/');if(p.length===3)return(p[2].length===2?'20'+p[2]:p[2])+'-'+p[1].padStart(2,'0')+'-'+p[0].padStart(2,'0')}
+                        if(s.match(/^\d{4}-\d{2}/))return s.slice(0,10);
+                        return s};
+                      const rows=lines.slice(hdrIdx+1).map(l=>parseCSV(l));
+                      const items=rows.filter(r=>{const amt=pn(find(r,'outstanding','balance','owing','total'));return amt>0}).map(r=>({
+                        entity_id:entitySel,
+                        customer_name:find(r,'customer','client','name','contact','debtor'),
+                        invoice_number:find(r,'invoice','invno','invnum','document','ref','reference'),
+                        invoice_date:parseDate(find(r,'invoicedate','date','issued')),
+                        due_date:parseDate(find(r,'duedate','due','paymentdate')),
+                        amount:pn(find(r,'amount','original','total','invoiceamount')),
+                        outstanding:pn(find(r,'outstanding','balance','owing','amountdue','remaining')),
+                        age_bucket:find(r,'aging','age','bucket','period','ageing')||''
+                      }));
+                      if(!items.length){alert('No valid AR items found in CSV ('+lines.length+' lines, header at row '+(hdrIdx+1)+': '+hdr.slice(0,5).join(', ')+')');return}
+                      if(!confirm('Found '+items.length+' AR items for '+entitySel+'. Replace existing Syft AR data for '+entitySel+'?'))return;
+                      setSaving(true);
+                      fetch('/api/syft-ar',{method:'PUT',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({replace_all:true,entity_id:entitySel,items})})
+                        .then(()=>fetch('/api/syft-ar').then(r=>r.json()))
+                        .then(d=>{setSyftAr(d.items||[]);setSaving(false)})
+                        .catch(e=>{alert('Error: '+e.message);setSaving(false)});
+                    };
+                    reader.readAsText(file);
+                  }}),
+                  syftAr.length>0&&h("button",{style:{padding:"6px 12px",background:C.bad,color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontSize:11,fontFamily:"inherit"},onClick:()=>{
+                    if(!confirm('Clear all Syft AR data?'))return;
+                    setSaving(true);
+                    fetch('/api/syft-ar',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({replace_all:true,items:[]})})
+                      .then(()=>{setSyftAr([]);setSaving(false)});
+                  }},"Clear All")
+                )
+              ),
+
+              // Unmatched Syft items — in Syft but NOT in HubSpot
+              inSyftOnly.length>0&&h("div",{className:"card",style:{marginBottom:16}},
+                h("div",{className:"card-hdr",style:{color:C.warn,background:"#FFF8E1"}},
+                  h("span",null,"In Syft, Not Matched to HubSpot"),
+                  h("span",null,inSyftOnly.length+" items \u2014 "+fmtF(Math.round(inSyftOnly.reduce((s,m)=>s+(m.syft.outstanding||0)*(entMap[m.entity]?.fx_rate||1),0)))+" USD")),
+                h("div",{style:{overflowX:"auto"}},h("table",null,
+                  h("thead",null,h("tr",null,["Entity","Customer","Invoice #","Amount","Outstanding","Due Date","Age"].map(x=>h("th",{key:x,style:{padding:"6px 8px",fontSize:11}},x)))),
+                  h("tbody",null,inSyftOnly.sort((a,b)=>(b.syft.outstanding||0)-(a.syft.outstanding||0)).map((m,i)=>h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
+                    h("td",{style:{padding:"5px 8px",fontWeight:600,color:C.ent[m.entity]}},m.entity),
+                    h("td",{style:{padding:"5px 8px",fontSize:11}},m.syft.customer_name),
+                    h("td",{style:{padding:"5px 8px",fontSize:11,fontFamily:"monospace"}},m.syft.invoice_number||"\u2014"),
+                    h("td",{style:{padding:"5px 8px",textAlign:"right"}},fc(m.syft.amount,m.entity)),
+                    h("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600}},fc(m.syft.outstanding,m.entity)),
+                    h("td",{style:{padding:"5px 8px",fontSize:10}},m.syft.due_date||"\u2014"),
+                    h("td",{style:{padding:"5px 8px",fontSize:10}},m.syft.age_bucket||"\u2014")
+                  )))
+                ))
+              ),
+
+              // In HubSpot but not matched to Syft
+              Object.values(inHSOnly).flat().length>0&&h("div",{className:"card",style:{marginBottom:16}},
+                h("div",{className:"card-hdr",style:{color:C.blue,background:"#EDF2FE"}},
+                  h("span",null,"In HubSpot, Not Matched to Syft"),
+                  h("span",null,Object.values(inHSOnly).flat().length+" deals \u2014 "+fmtF(Math.round(Object.values(inHSOnly).flat().reduce((s,d)=>s+toUSD(d),0)))+" USD")),
+                h("div",{style:{overflowX:"auto"}},h("table",null,
+                  h("thead",null,h("tr",null,["Entity","Deal Name","Owner","Amount","Outstanding","Close Date","Invoice Status"].map(x=>h("th",{key:x,style:{padding:"6px 8px",fontSize:11}},x)))),
+                  h("tbody",null,Object.values(inHSOnly).flat().sort((a,b)=>(b.outstanding||0)-(a.outstanding||0)).map((d,i)=>h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
+                    h("td",{style:{padding:"5px 8px",fontWeight:600,color:C.ent[d.entity_id]}},d.entity_id),
+                    h("td",{style:{padding:"5px 8px",fontSize:11}},d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{color:C.blue,textDecoration:"none"}},d.deal_name):d.deal_name),
+                    h("td",{style:{padding:"5px 8px",fontSize:10}},d.owner),
+                    h("td",{style:{padding:"5px 8px",textAlign:"right"}},fc(d.amount,d.entity_id)),
+                    h("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600}},fc(d.outstanding,d.entity_id)),
+                    h("td",{style:{padding:"5px 8px",fontSize:10}},dateFmt(d.close_date)),
+                    h("td",{style:{padding:"5px 8px",fontSize:10,color:d.invoice_status?C.ok:C.bad}},d.invoice_status||"No invoice")
+                  )))
+                ))
+              ),
+
+              // Matched items
+              matched.length>0&&h("div",{className:"card"},
+                h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},
+                  h("span",null,"Matched (Syft \u2194 HubSpot)"),
+                  h("span",null,matched.length+" items")),
+                h("div",{style:{overflowX:"auto"}},h("table",null,
+                  h("thead",null,h("tr",null,["Entity","Syft Customer","Syft Invoice","Syft Outstanding","HubSpot Deal","HS Outstanding","Diff"].map(x=>h("th",{key:x,style:{padding:"6px 8px",fontSize:11}},x)))),
+                  h("tbody",null,matched.map((m,i)=>{const diff=(m.syft.outstanding||0)-(m.deal.outstanding||0);
+                    return h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
+                      h("td",{style:{padding:"5px 8px",fontWeight:600,color:C.ent[m.entity]}},m.entity),
+                      h("td",{style:{padding:"5px 8px",fontSize:11}},m.syft.customer_name),
+                      h("td",{style:{padding:"5px 8px",fontSize:11,fontFamily:"monospace"}},m.syft.invoice_number||"\u2014"),
+                      h("td",{style:{padding:"5px 8px",textAlign:"right"}},fc(m.syft.outstanding,m.entity)),
+                      h("td",{style:{padding:"5px 8px",fontSize:11}},m.deal.hubspot_link?h("a",{href:m.deal.hubspot_link,target:"_blank",style:{color:C.blue,textDecoration:"none"}},m.deal.deal_name):m.deal.deal_name),
+                      h("td",{style:{padding:"5px 8px",textAlign:"right"}},fc(m.deal.outstanding,m.entity)),
+                      h("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600,color:Math.abs(diff)>1?C.warn:C.ok}},diff?fc(Math.round(diff),m.entity):"\u2713")
+                    )}))
+                ))
+              ),
+
+              // No data prompt
+              syftAr.length===0&&h("div",{style:{padding:24,textAlign:"center",color:C.mid}},
+                h("div",{style:{fontSize:14,marginBottom:8}},"No Syft AR data loaded yet"),
+                h("div",{style:{fontSize:11}},"Upload a Syft AR Aging or AR Detail CSV report above to start reconciliation. The report should include columns like Customer, Invoice #, Amount, Outstanding, Due Date."))
+            )})()
         )})(),
 
       // ═══ ENTITY CASHFLOW ═══

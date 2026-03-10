@@ -435,6 +435,33 @@ export default {
         return json({success:true});
       }
 
+      // Syft AR Items
+      if(path==='/api/syft-ar'&&method==='GET'){
+        const e=url.searchParams.get('entity');
+        let q='SELECT * FROM syft_ar_items'; if(e) q+=` WHERE entity_id='${e}'`; q+=' ORDER BY outstanding DESC';
+        return json({items:(await env.DB.prepare(q).all()).results});
+      }
+      if(path==='/api/syft-ar'&&method==='PUT'){
+        const body=await request.json();
+        if(body.replace_all){
+          const e=body.entity_id;
+          if(e) await env.DB.prepare('DELETE FROM syft_ar_items WHERE entity_id=?').bind(e).run();
+          else await env.DB.prepare('DELETE FROM syft_ar_items').run();
+        }
+        for(const item of (body.items||[])){
+          await env.DB.prepare('INSERT INTO syft_ar_items(entity_id,customer_name,invoice_number,invoice_date,due_date,amount,outstanding,age_bucket) VALUES(?,?,?,?,?,?,?,?)')
+            .bind(item.entity_id,item.customer_name||'',item.invoice_number||'',item.invoice_date||'',item.due_date||'',item.amount||0,item.outstanding||0,item.age_bucket||'').run();
+        }
+        return json({success:true,count:(body.items||[]).length});
+      }
+      if(path==='/api/syft-ar/match'&&method==='PUT'){
+        const body=await request.json();
+        for(const m of (body.matches||[])){
+          await env.DB.prepare('UPDATE syft_ar_items SET matched_deal_id=? WHERE id=?').bind(m.deal_id,m.syft_id).run();
+        }
+        return json({success:true});
+      }
+
       // ═══ LIVE WATERFALL CALCULATION ═══
       if(path==='/api/waterfall'&&method==='GET'){
         const ef=url.searchParams.get('entity');
@@ -517,11 +544,25 @@ export default {
           "ALTER TABLE ar_overrides ADD COLUMN ticket_status TEXT",
           "ALTER TABLE ar_overrides ADD COLUMN ticket_priority TEXT",
           "ALTER TABLE ar_overrides ADD COLUMN ticket_category TEXT",
+          "ALTER TABLE ar_overrides ADD COLUMN invoice_number TEXT",
+          `CREATE TABLE IF NOT EXISTS syft_ar_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id TEXT NOT NULL,
+            customer_name TEXT,
+            invoice_number TEXT,
+            invoice_date TEXT,
+            due_date TEXT,
+            amount REAL DEFAULT 0,
+            outstanding REAL DEFAULT 0,
+            age_bucket TEXT,
+            matched_deal_id INTEGER,
+            updated_at TEXT DEFAULT (datetime('now'))
+          )`,
         ];
         const results=[];
         for(const sql of migrations){
-          try{await env.DB.prepare(sql).run();results.push({sql,status:'ok'})}
-          catch(e){results.push({sql,status:'skipped',error:e.message})}
+          try{await env.DB.prepare(sql).run();results.push({sql:sql.slice(0,60),status:'ok'})}
+          catch(e){results.push({sql:sql.slice(0,60),status:'skipped',error:e.message})}
         }
         return json({results});
       }
