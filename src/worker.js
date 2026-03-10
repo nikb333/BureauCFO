@@ -363,6 +363,23 @@ export default {
         return json({orders:(await env.DB.prepare(q).all()).results});
       }
 
+      // Stock POs — live from Bureau Ops
+      if(path==='/api/stock-pos-live'&&method==='GET'){
+        try{
+          const resp=await fetch('https://bureau-a04.pages.dev/api/all');
+          const bops=await resp.json();
+          const orders=(bops.orders||[])
+            .filter(o=>o.depositStatus!=='paid'||o.releaseStatus!=='paid')
+            .map(o=>({
+              id:o.id||o.ref,entity_id:o.region,po_number:o.ref,supplier:o.supplier||'',currency:o.currency,
+              total_amount:o.totalValue||0,
+              deposit_amount:o.depositAmt||0,deposit_status:o.depositStatus||'unpaid',deposit_due:o.depositDue||'',
+              release_amount:o.releaseAmt||0,release_status:o.releaseStatus||'unpaid',release_due:o.releaseDue||'',
+            }));
+          return json({orders,source:'bureau-ops',total:bops.orders?.length||0});
+        }catch(e){return json({orders:[],error:e.message})}
+      }
+
       // Trade Loans
       if(path==='/api/trade-loans'&&method==='GET') return json({loans:(await env.DB.prepare('SELECT * FROM trade_loans ORDER BY maturity_date').all()).results});
 

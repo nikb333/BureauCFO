@@ -540,9 +540,22 @@ function App(){
       fetch('/api/inputs').then(r=>r.json()),
       fetch('/api/scenarios').then(r=>r.json()),
       fetch('/api/syft-ar').then(r=>r.json()).catch(()=>({items:[]})),
-    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD])=>{
+      fetch('https://bureau-a04.pages.dev/api/all').then(r=>r.json()).catch(()=>({orders:[]})),
+    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,bops])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
-      setStockPOs(poD.orders||[]);setTradeLoans(lnD.loans||[]);
+      // Use Bureau Ops live data for stock POs, fall back to D1
+      const bopsOrders=(bops.orders||[])
+        .filter(o=>o.depositStatus!=='paid'||o.releaseStatus!=='paid')
+        .map(o=>({
+          id:o.id||o.ref,entity_id:o.region,po_number:o.ref,supplier:o.supplier||'',currency:o.currency,
+          total_amount:o.totalValue||0,
+          deposit_amount:o.depositAmt||0,deposit_status:o.depositStatus||'unpaid',deposit_due:o.depositDue||'',
+          release_amount:o.releaseAmt||0,release_status:o.releaseStatus||'unpaid',release_due:o.releaseDue||'',
+          status:(o.depositStatus==='paid'&&o.releaseStatus==='paid')?'paid':(o.releaseStatus==='due'||o.depositStatus==='due')?'due':'pending',
+          source:'bureau-ops'
+        }));
+      setStockPOs(bopsOrders.length>0?bopsOrders:poD.orders||[]);
+      setTradeLoans(lnD.loans||[]);
       setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setLoading(false);
     }).catch(e=>{setError(e.message);setLoading(false)});
   };
@@ -636,16 +649,14 @@ function App(){
       // ═══ AR CHASING ═══
       tab==="ar"&&(()=>{
         const unpaid=ar.filter(d=>d.outstanding>0);
-        const DEFINITE_TERMS=['Due on Confirmation','Net 30','Net 30 from install','Net 30 from invoice','Net 60','Net 14','Net 15','50/50','50% on Confirmation / 50% before Delivery','50% on Confirmation / 50% on Delivery'];
-        const definite=unpaid.filter(d=>{const t=d.payment_terms||'';return DEFINITE_TERMS.some(dt=>t.includes(dt))});
-        const proposed=unpaid.filter(d=>{const t=d.payment_terms||'';return !DEFINITE_TERMS.some(dt=>t.includes(dt))});
+        const isDefiniteTerm=t=>{if(!t)return false;return ['Due on Confirmation','Net 30','Net 30 from install','Net 30 from invoice','Net 60','Net 14','Net 15'].includes(t)||t.includes('50/50')||t.includes('50%')};
+        const definite=unpaid.filter(d=>isDefiniteTerm(d.payment_terms));
+        const proposed=unpaid.filter(d=>!isDefiniteTerm(d.payment_terms));
         const missingInv=unpaid.filter(d=>!d.invoice_status||d.invoice_status==='');
         const justClosed=unpaid.filter(d=>d.just_closed);
-        const isDirect=d=>['Inbound','Outbound','Return Customer','RFP/Tenders'].includes(d.sales_channel);
-        const isChannel=d=>['Dealers','Architect/Designer','Builder','Design & Build'].includes(d.sales_channel);
-        const fxR={US:1,CA:0.71,UK:1.33,AU:0.68,EUR:1.08};
-        const toUSD=(d)=>Math.round((d.outstanding||0)*(fxR[d.entity_id]||1));
+        const toUSD=(d)=>Math.round((d.outstanding||0)*((entMap[d.entity_id]||{}).fx_rate||1));
         const regionOrder=['AU','UK','US','CA'];
+        const regionLabel={AU:'AUS',UK:'UK',US:'USA',CA:'CAD'};
 
         const DealRow=(d,showTermsNote)=>h("tr",{key:d.id},
           h("td",{style:{fontWeight:500,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
@@ -654,39 +665,35 @@ function App(){
           h("td",null,h("span",{style:{color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
           h("td",{style:{color:C.mid}},d.currency),
           h("td",{style:{fontSize:10}},fmtF(d.amount)),
-          h("td",{style:{fontSize:10,color:C.ok}},d.paid?fmtF(d.paid):"—"),
+          h("td",{style:{fontSize:10,color:C.ok}},d.paid?fmtF(d.paid):"\u2014"),
           h("td",{style:{fontWeight:600}},fmtF(d.outstanding)),
           h("td",{style:{fontWeight:600,color:C.mid,fontSize:10}},fmtF(toUSD(d))),
-          h("td",{style:{color:C.mid,fontSize:9,maxWidth:130}},
-            d.payment_terms==='Other'&&d.payment_terms_other?h("span",{title:d.payment_terms_other},"\u2139\ufe0f "+d.payment_terms_other.slice(0,30)):d.payment_terms||"—"),
+          h("td",{style:{fontSize:9,maxWidth:160,whiteSpace:"normal",lineHeight:"1.3"}},
+            d.payment_terms==='Other'&&d.payment_terms_other
+              ?h("span",{style:{display:"flex",alignItems:"flex-start",gap:3}},
+                  h("span",{style:{background:C.blue,color:"#fff",borderRadius:2,padding:"0 3px",fontSize:8,flexShrink:0,marginTop:1}},"i"),
+                  h("span",null,d.payment_terms_other))
+              :(d.payment_terms||"\u2014")),
           h("td",{style:{fontSize:10}},dateFmt(d.close_date)),
-          h("td",{style:{fontSize:10,color:C.mid}},d.age_days||"—"),
+          h("td",{style:{fontSize:10,color:C.mid}},d.age_days||"\u2014"),
           h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
           h("td",null,h("span",{className:"badge "+(d.overdue?"true":"false")},d.overdue?"Yes":"No")),
           h("td",null,d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{fontSize:9,color:C.blue}},"\u2197"):null)
         );
 
         const DealTable=(deals,showTermsNote)=>{
-          const direct=deals.filter(isDirect).sort((a,b)=>b.outstanding-a.outstanding);
-          const channel=deals.filter(isChannel).sort((a,b)=>b.outstanding-a.outstanding);
-          const other=deals.filter(d=>!isDirect(d)&&!isChannel(d)).sort((a,b)=>b.outstanding-a.outstanding);
-          const Section=(title,items)=>{
-            const byRegion={};regionOrder.forEach(r=>{const rd=items.filter(d=>d.entity_id===r);if(rd.length)byRegion[r]=rd});
-            return h("div",null,
-              h("tr",null,h("td",{colSpan:14,style:{fontWeight:700,fontSize:12,color:C.steel,paddingTop:12,background:"#F5F4F0"}},title)),
-              Object.entries(byRegion).map(([r,rd])=>h(React.Fragment,{key:r},
-                h("tr",null,h("td",{colSpan:14,style:{fontSize:10,fontWeight:600,color:C.ent[r],paddingTop:6}},"── "+{AU:"AUS",UK:"UK",US:"USA",CA:"CAD"}[r]+" ("+rd.length+" deals) ──")),
-                rd.map(d=>DealRow(d,showTermsNote))
-              ))
-            )};
+          const byRegion={};
+          regionOrder.forEach(r=>{const rd=deals.filter(d=>d.entity_id===r).sort((a,b)=>(b.outstanding||0)-(a.outstanding||0));if(rd.length)byRegion[r]=rd});
           return h("table",null,
             h("thead",null,h("tr",null,["Deal","Owner","Entity","Cur","Amount","Paid","Outstanding","USD","Terms","Closed","Age","Promised","Overdue",""].map(x=>h("th",{key:x},x)))),
             h("tbody",null,
-              direct.length>0&&Section("DIRECT",direct),
-              channel.length>0&&Section("CHANNEL",channel),
-              other.length>0&&Section("OTHER",other)
-            )
-          );
+              regionOrder.map(r=>{
+                const rd=byRegion[r];if(!rd)return null;
+                return h(React.Fragment,{key:r},
+                  h("tr",null,h("td",{colSpan:14,style:{fontSize:10,fontWeight:600,color:C.ent[r],paddingTop:8,borderBottom:"none"}},
+                    "\u2014 "+regionLabel[r]+" ("+rd.length+" deal"+(rd.length!==1?"s":"")+") \u2014")),
+                  rd.map(d=>DealRow(d,showTermsNote)))})
+            ));
         };
 
         const ARSUBS=[{id:"summary",l:"Summary"},{id:"definite",l:"Definite ("+definite.length+")"},{id:"proposed",l:"Proposed ("+proposed.length+")"},{id:"missing",l:"Missing Inv ("+missingInv.length+")"},{id:"justclosed",l:"Just Closed ("+justClosed.length+")"},{id:"recon",l:"Reconciliation"}];
@@ -703,11 +710,11 @@ function App(){
                {l:"Missing Invoices",v:missingInv.length+" deals",s:"No invoice raised",c:C.bad}
               ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))),
             h("div",{className:"card",style:{marginBottom:16}},
-              h("div",{className:"card-hdr"},"Outstanding by Region — Definite Chases (USD)"),
-              h("table",null,h("thead",null,h("tr",null,["Region","Direct (USD)","Channel (USD)","Total (USD)"].map(x=>h("th",{key:x},x)))),
-                h("tbody",null,regionOrder.map(r=>{const rd=definite.filter(d=>d.entity_id===r);const dir=rd.filter(isDirect);const ch=rd.filter(isChannel);
-                  return h("tr",{key:r},h("td",{style:{fontWeight:600,color:C.ent[r]}},{AU:"AUS",UK:"UK",US:"USA",CA:"CAD"}[r]),
-                    h("td",null,fmtF(dir.reduce((s,d)=>s+toUSD(d),0))),h("td",null,ch.length?fmtF(ch.reduce((s,d)=>s+toUSD(d),0)):"—"),h("td",{style:{fontWeight:700}},fmtF(rd.reduce((s,d)=>s+toUSD(d),0))))}
+              h("div",{className:"card-hdr"},"Outstanding by Region (USD)"),
+              h("table",null,h("thead",null,h("tr",null,["Region","Definite (USD)","Proposed (USD)","Total (USD)","Deals"].map(x=>h("th",{key:x},x)))),
+                h("tbody",null,regionOrder.map(r=>{const rdDef=definite.filter(d=>d.entity_id===r);const rdProp=proposed.filter(d=>d.entity_id===r);const allR=unpaid.filter(d=>d.entity_id===r);
+                  return h("tr",{key:r},h("td",{style:{fontWeight:600,color:C.ent[r]}},regionLabel[r]),
+                    h("td",null,fmtF(rdDef.reduce((s,d)=>s+toUSD(d),0))),h("td",null,rdProp.length?fmtF(rdProp.reduce((s,d)=>s+toUSD(d),0)):"\u2014"),h("td",{style:{fontWeight:700}},fmtF(allR.reduce((s,d)=>s+toUSD(d),0))),h("td",{style:{color:C.mid}},allR.length))}
                 )))
             ),
             h("div",{className:"card"},
@@ -956,8 +963,7 @@ function App(){
 
       // ═══ AP SCHEDULE ═══
       tab==="ap"&&(()=>{
-        const fxR={US:1,CA:0.71,UK:1.33,AU:0.68};
-        const toUSD=(v,eId)=>Math.round((v||0)*(fxR[eId]||1));
+        const toUSD=(v,eId)=>Math.round((v||0)*((entMap[eId]||{}).fx_rate||1));
         const EIDs=["US","CA","UK","AU"];
         const startDate=inputs?.settings?.week_start_date||'2026-03-07';
         const weekStarts=Array.from({length:11},(_,i)=>{const d=new Date(startDate);d.setDate(d.getDate()+i*7);return d});
@@ -1182,17 +1188,21 @@ function App(){
             return eStock.length>0&&h("div",{className:"card section"},
               h("div",{className:"card-hdr"},
                 h("span",null,"Stock PO Payments ("+eStock.length+")"),
-                h("span",null,fc(eStock.reduce((s,p)=>s+(p.deposit_amount||0)+(p.release_amount||0),0)))),
+                h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+                  h("span",null,fc(eStock.reduce((s,p)=>s+(p.total_amount||0),0))),
+                  h("a",{href:"https://bureau-a04.pages.dev",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none",marginLeft:8}},"Bureau Ops \u2197"))),
               h("table",null,
-                h("thead",null,h("tr",null,["PO","Supplier","Deposit","Dep Due","Release","Rel Due","Total"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
-                h("tbody",null,eStock.map(p=>h("tr",{key:p.id},
-                  h("td",{style:{fontWeight:600,color:C.warn}},p.po_ref),
+                h("thead",null,h("tr",null,["PO","Supplier","Deposit","Dep Status","Dep Due","Release","Rel Status","Rel Due","Total"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
+                h("tbody",null,eStock.sort((a,b)=>(b.total_amount||0)-(a.total_amount||0)).map(p=>h("tr",{key:p.id},
+                  h("td",null,h("a",{href:"https://bureau-a04.pages.dev",target:"_blank",style:{color:C.blue,textDecoration:"none",fontWeight:600}},p.po_number||p.po_ref||"\u2014")),
                   h("td",{style:{color:C.mid}},p.supplier),
                   h("td",null,fc(p.deposit_amount||0)),
+                  h("td",null,h("span",{className:"badge "+(p.deposit_status==='paid'?'paid':p.deposit_status==='due'?'overdue':'current')},p.deposit_status||"pending")),
                   h("td",{style:{fontSize:10}},dateFmt(p.deposit_due)),
                   h("td",null,fc(p.release_amount||0)),
+                  h("td",null,h("span",{className:"badge "+(p.release_status==='paid'?'paid':p.release_status==='due'?'overdue':'current')},p.release_status||"pending")),
                   h("td",{style:{fontSize:10}},dateFmt(p.release_due)),
-                  h("td",{style:{fontWeight:700}},fc((p.deposit_amount||0)+(p.release_amount||0)))
+                  h("td",{style:{fontWeight:700}},fc(p.total_amount||(p.deposit_amount||0)+(p.release_amount||0)))
                 )))))})()
         )})(),
 
@@ -1202,31 +1212,35 @@ function App(){
           h("div",{className:"card-hdr"},
             h("span",null,"Stock PO Payments \u2014 Aggregate (USD)"),
             h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
-              h("span",{style:{fontSize:10,color:C.mid}},"Detail in Entity Cashflow tab"),
-              h("a",{href:"https://bureau.pages.dev",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none"}},"Bureau Ops \u2197"))),
+              h("span",{style:{fontSize:10,color:C.mid}},stockPOs.length+" outstanding POs"),
+              h("a",{href:"https://bureau-a04.pages.dev",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none"}},"Open Bureau Ops \u2197"))),
+          h("div",{style:{fontSize:10,color:C.mid,padding:"8px 16px",background:"#FAFAF8",borderBottom:"1px solid #E8E7E3"}},
+            "Sourced live from Bureau Ops. Entity-level detail available in the Entity Cashflow tab."),
           h("table",null,
-            h("thead",null,h("tr",null,["Entity","POs","Total Deposit (USD)","Total Release (USD)","Grand Total (USD)",""].map(x=>h("th",{key:x},x)))),
+            h("thead",null,h("tr",null,["Entity","POs","Outstanding Deposits (USD)","Outstanding Releases (USD)","Total Outstanding (USD)",""].map(x=>h("th",{key:x},x)))),
             h("tbody",null,
               ["US","CA","UK","AU"].map(eId=>{
                 const eStock=stockPOs.filter(p=>p.entity_id===eId);
                 if(!eStock.length)return null;
                 const fx=(entMap[eId]||{}).fx_rate||1;
-                const depTotal=eStock.reduce((s,p)=>s+(p.deposit_amount||0),0);
-                const relTotal=eStock.reduce((s,p)=>s+(p.release_amount||0),0);
-                const grandTotal=depTotal+relTotal;
+                const depOut=eStock.filter(p=>p.deposit_status!=='paid').reduce((s,p)=>s+(p.deposit_amount||0),0);
+                const relOut=eStock.filter(p=>p.release_status!=='paid').reduce((s,p)=>s+(p.release_amount||0),0);
                 return h("tr",{key:eId},
                   h("td",{style:{fontWeight:600,color:C.ent[eId]}},eId),
                   h("td",null,eStock.length),
-                  h("td",null,fmt(Math.round(depTotal*fx))),
-                  h("td",null,fmt(Math.round(relTotal*fx))),
-                  h("td",{style:{fontWeight:700}},fmt(Math.round(grandTotal*fx))),
+                  h("td",null,fmt(Math.round(depOut*fx))),
+                  h("td",null,fmt(Math.round(relOut*fx))),
+                  h("td",{style:{fontWeight:700}},fmt(Math.round((depOut+relOut)*fx))),
                   h("td",null,h("button",{className:"btn btn-sm btn-outline",onClick:()=>{setTab("entity");setETab(eId)}},"View Detail \u2192")))}),
               h("tr",{style:{borderTop:"2px solid "+C.steel,fontWeight:700}},
                 h("td",null,"TOTAL"),
                 h("td",null,stockPOs.length),
-                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+(p.deposit_amount||0)*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
-                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+(p.release_amount||0)*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
-                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+((p.deposit_amount||0)+(p.release_amount||0))*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
+                h("td",{colSpan:2}),
+                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>{
+                  const fx=(entMap[p.entity_id]||{}).fx_rate||1;
+                  const depOut=p.deposit_status!=='paid'?(p.deposit_amount||0):0;
+                  const relOut=p.release_status!=='paid'?(p.release_amount||0):0;
+                  return s+(depOut+relOut)*fx},0)))),
                 h("td",null))))
         ),
         // Trade finance — editable with add/delete/CSV
