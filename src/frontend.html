@@ -540,9 +540,22 @@ function App(){
       fetch('/api/inputs').then(r=>r.json()),
       fetch('/api/scenarios').then(r=>r.json()),
       fetch('/api/syft-ar').then(r=>r.json()).catch(()=>({items:[]})),
-    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD])=>{
+      fetch('https://bureau-a04.pages.dev/api/all').then(r=>r.json()).catch(()=>({orders:[]})),
+    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,bops])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
-      setStockPOs(poD.orders||[]);setTradeLoans(lnD.loans||[]);
+      // Use Bureau Ops live data for stock POs, fall back to D1
+      const bopsOrders=(bops.orders||[])
+        .filter(o=>o.depositStatus!=='paid'||o.releaseStatus!=='paid')
+        .map(o=>({
+          id:o.id||o.ref,entity_id:o.region,po_number:o.ref,supplier:o.supplier||'',currency:o.currency,
+          total_amount:o.totalValue||0,
+          deposit_amount:o.depositAmt||0,deposit_status:o.depositStatus||'unpaid',deposit_due:o.depositDue||'',
+          release_amount:o.releaseAmt||0,release_status:o.releaseStatus||'unpaid',release_due:o.releaseDue||'',
+          status:(o.depositStatus==='paid'&&o.releaseStatus==='paid')?'paid':(o.releaseStatus==='due'||o.depositStatus==='due')?'due':'pending',
+          source:'bureau-ops'
+        }));
+      setStockPOs(bopsOrders.length>0?bopsOrders:poD.orders||[]);
+      setTradeLoans(lnD.loans||[]);
       setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setLoading(false);
     }).catch(e=>{setError(e.message);setLoading(false)});
   };
@@ -1182,17 +1195,21 @@ function App(){
             return eStock.length>0&&h("div",{className:"card section"},
               h("div",{className:"card-hdr"},
                 h("span",null,"Stock PO Payments ("+eStock.length+")"),
-                h("span",null,fc(eStock.reduce((s,p)=>s+(p.deposit_amount||0)+(p.release_amount||0),0)))),
+                h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+                  h("span",null,fc(eStock.reduce((s,p)=>s+(p.total_amount||0),0))),
+                  h("a",{href:"https://bureau-a04.pages.dev",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none",marginLeft:8}},"Bureau Ops \u2197"))),
               h("table",null,
-                h("thead",null,h("tr",null,["PO","Supplier","Deposit","Dep Due","Release","Rel Due","Total"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
-                h("tbody",null,eStock.map(p=>h("tr",{key:p.id},
-                  h("td",{style:{fontWeight:600,color:C.warn}},p.po_ref),
+                h("thead",null,h("tr",null,["PO","Supplier","Deposit","Dep Status","Dep Due","Release","Rel Status","Rel Due","Total"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
+                h("tbody",null,eStock.sort((a,b)=>(b.total_amount||0)-(a.total_amount||0)).map(p=>h("tr",{key:p.id},
+                  h("td",null,h("a",{href:"https://bureau-a04.pages.dev",target:"_blank",style:{color:C.blue,textDecoration:"none",fontWeight:600}},p.po_number||p.po_ref||"\u2014")),
                   h("td",{style:{color:C.mid}},p.supplier),
                   h("td",null,fc(p.deposit_amount||0)),
+                  h("td",null,h("span",{className:"badge "+(p.deposit_status==='paid'?'paid':p.deposit_status==='due'?'overdue':'current')},p.deposit_status||"pending")),
                   h("td",{style:{fontSize:10}},dateFmt(p.deposit_due)),
                   h("td",null,fc(p.release_amount||0)),
+                  h("td",null,h("span",{className:"badge "+(p.release_status==='paid'?'paid':p.release_status==='due'?'overdue':'current')},p.release_status||"pending")),
                   h("td",{style:{fontSize:10}},dateFmt(p.release_due)),
-                  h("td",{style:{fontWeight:700}},fc((p.deposit_amount||0)+(p.release_amount||0)))
+                  h("td",{style:{fontWeight:700}},fc(p.total_amount||(p.deposit_amount||0)+(p.release_amount||0)))
                 )))))})()
         )})(),
 
@@ -1202,31 +1219,35 @@ function App(){
           h("div",{className:"card-hdr"},
             h("span",null,"Stock PO Payments \u2014 Aggregate (USD)"),
             h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
-              h("span",{style:{fontSize:10,color:C.mid}},"Detail in Entity Cashflow tab"),
-              h("a",{href:"https://bureau.pages.dev",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none"}},"Bureau Ops \u2197"))),
+              h("span",{style:{fontSize:10,color:C.mid}},stockPOs.length+" outstanding POs"),
+              h("a",{href:"https://bureau-a04.pages.dev",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none"}},"Open Bureau Ops \u2197"))),
+          h("div",{style:{fontSize:10,color:C.mid,padding:"8px 16px",background:"#FAFAF8",borderBottom:"1px solid #E8E7E3"}},
+            "Sourced live from Bureau Ops. Entity-level detail available in the Entity Cashflow tab."),
           h("table",null,
-            h("thead",null,h("tr",null,["Entity","POs","Total Deposit (USD)","Total Release (USD)","Grand Total (USD)",""].map(x=>h("th",{key:x},x)))),
+            h("thead",null,h("tr",null,["Entity","POs","Outstanding Deposits (USD)","Outstanding Releases (USD)","Total Outstanding (USD)",""].map(x=>h("th",{key:x},x)))),
             h("tbody",null,
               ["US","CA","UK","AU"].map(eId=>{
                 const eStock=stockPOs.filter(p=>p.entity_id===eId);
                 if(!eStock.length)return null;
                 const fx=(entMap[eId]||{}).fx_rate||1;
-                const depTotal=eStock.reduce((s,p)=>s+(p.deposit_amount||0),0);
-                const relTotal=eStock.reduce((s,p)=>s+(p.release_amount||0),0);
-                const grandTotal=depTotal+relTotal;
+                const depOut=eStock.filter(p=>p.deposit_status!=='paid').reduce((s,p)=>s+(p.deposit_amount||0),0);
+                const relOut=eStock.filter(p=>p.release_status!=='paid').reduce((s,p)=>s+(p.release_amount||0),0);
                 return h("tr",{key:eId},
                   h("td",{style:{fontWeight:600,color:C.ent[eId]}},eId),
                   h("td",null,eStock.length),
-                  h("td",null,fmt(Math.round(depTotal*fx))),
-                  h("td",null,fmt(Math.round(relTotal*fx))),
-                  h("td",{style:{fontWeight:700}},fmt(Math.round(grandTotal*fx))),
+                  h("td",null,fmt(Math.round(depOut*fx))),
+                  h("td",null,fmt(Math.round(relOut*fx))),
+                  h("td",{style:{fontWeight:700}},fmt(Math.round((depOut+relOut)*fx))),
                   h("td",null,h("button",{className:"btn btn-sm btn-outline",onClick:()=>{setTab("entity");setETab(eId)}},"View Detail \u2192")))}),
               h("tr",{style:{borderTop:"2px solid "+C.steel,fontWeight:700}},
                 h("td",null,"TOTAL"),
                 h("td",null,stockPOs.length),
-                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+(p.deposit_amount||0)*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
-                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+(p.release_amount||0)*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
-                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+((p.deposit_amount||0)+(p.release_amount||0))*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
+                h("td",{colSpan:2}),
+                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>{
+                  const fx=(entMap[p.entity_id]||{}).fx_rate||1;
+                  const depOut=p.deposit_status!=='paid'?(p.deposit_amount||0):0;
+                  const relOut=p.release_status!=='paid'?(p.release_amount||0):0;
+                  return s+(depOut+relOut)*fx},0)))),
                 h("td",null))))
         ),
         // Trade finance — editable with add/delete/CSV
