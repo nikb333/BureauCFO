@@ -1177,7 +1177,7 @@ function App(){
                   onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({payment_date_override:ev.target.value||null})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],payment_date_override:ev.target.value||null};setAp(nd)})}})),
                 h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note...",style:{fontSize:10,minWidth:150,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
                   onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}}))
-              ))))))
+              )))))
         )})(),
 
       // ═══ STOCK PAYMENTS ═══
