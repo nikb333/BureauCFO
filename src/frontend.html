@@ -636,9 +636,10 @@ function App(){
       // ═══ AR CHASING ═══
       tab==="ar"&&(()=>{
         const unpaid=ar.filter(d=>d.outstanding>0);
-        const definite=unpaid.filter(d=>d.ar_bucket==='definite'||(!d.ar_bucket&&d.payment_terms&&d.payment_terms!=='Other'));
-        const proposed=unpaid.filter(d=>d.ar_bucket==='proposed'||(d.payment_terms==='Other'||!d.payment_terms));
-        const missingInv=unpaid.filter(d=>d.ar_bucket==='missing_invoice'||(!d.invoice_status&&d.outstanding>0));
+        const DEFINITE_TERMS=['Due on Confirmation','Net 30','Net 30 from install','Net 30 from invoice','Net 60','Net 14','Net 15','50/50','50% on Confirmation / 50% before Delivery','50% on Confirmation / 50% on Delivery'];
+        const definite=unpaid.filter(d=>{const t=d.payment_terms||'';return DEFINITE_TERMS.some(dt=>t.includes(dt))});
+        const proposed=unpaid.filter(d=>{const t=d.payment_terms||'';return !DEFINITE_TERMS.some(dt=>t.includes(dt))});
+        const missingInv=unpaid.filter(d=>!d.invoice_status||d.invoice_status==='');
         const justClosed=unpaid.filter(d=>d.just_closed);
         const isDirect=d=>['Inbound','Outbound','Return Customer','RFP/Tenders'].includes(d.sales_channel);
         const isChannel=d=>['Dealers','Architect/Designer','Builder','Design & Build'].includes(d.sales_channel);
@@ -972,14 +973,12 @@ function App(){
           return 11;
         };
         const totalAPusd=ap.reduce((s,d)=>s+toUSD(d.amount,d.entity_id),0);
-        // Weekly totals for summary grid
-        const weeklyByEntity={};const weeklyTotal=Array(11).fill(0);
+        // Weekly AP from waterfall (percentage-based engine) — not date-based vendor assignment
+        const wfWeeklyByEntity={};const wfWeeklyTotal=Array(11).fill(0);
         EIDs.forEach(eId=>{
-          weeklyByEntity[eId]=Array(11).fill(0);
-          ap.filter(d=>d.entity_id===eId).forEach(d=>{
-            const wk=assignWeek(d);
-            if(wk>=0&&wk<11){weeklyByEntity[eId][wk]+=d.amount;weeklyTotal[wk]+=toUSD(d.amount,eId)}
-          });
+          const entWF=waterfall?.entities?.[eId]?.weeks||[];
+          wfWeeklyByEntity[eId]=Array.from({length:11},(_,i)=>entWF[i]?.vendorAP||0);
+          entWF.forEach((w,i)=>{if(i<11)wfWeeklyTotal[i]+=toUSD(w.vendorAP||0,eId)});
         });
 
         // AP vendor row helper
@@ -1027,11 +1026,11 @@ function App(){
                 h("tbody",null,
                   EIDs.map(eId=>h("tr",{key:eId},
                     h("td",{style:{fontWeight:600,color:C.ent[eId],fontSize:11}},eId),
-                    weeklyByEntity[eId].slice(0,8).map((v,i)=>h("td",{key:i,style:{textAlign:"right",fontSize:11,color:v?C.bad:C.warm}},v?fmtC(v,eId):"\u2014"))
+                    wfWeeklyByEntity[eId].slice(0,8).map((v,i)=>h("td",{key:i,style:{textAlign:"right",fontSize:11,color:v?C.bad:C.warm}},v?fmtC(v,eId):"\u2014"))
                   )),
                   h("tr",{style:{borderTop:"2px solid #E8E7E3",fontWeight:700}},
                     h("td",null,"Total USD"),
-                    weeklyTotal.slice(0,8).map((v,i)=>h("td",{key:i,style:{textAlign:"right",color:v?C.bad:C.warm}},v?fmt(v):"\u2014"))
+                    wfWeeklyTotal.slice(0,8).map((v,i)=>h("td",{key:i,style:{textAlign:"right",color:v?C.bad:C.warm}},v?fmt(v):"\u2014"))
                   )
                 )
               )
@@ -1052,7 +1051,7 @@ function App(){
       })(),
 
       // ═══ ENTITY CASHFLOW ═══
-      tab==="entity"&&(()=>{const e=entMap[eTab],eAR=ar.filter(d=>d.entity_id===eTab&&d.outstanding>0&&d.invoice_status),eAP=ap.filter(d=>d.entity_id===eTab),eWF=waterfall?.entities?.[eTab];
+      tab==="entity"&&(()=>{const e=entMap[eTab],eAR=ar.filter(d=>d.entity_id===eTab&&d.outstanding>0),eAP=ap.filter(d=>d.entity_id===eTab),eWF=waterfall?.entities?.[eTab];
         const cash=e?(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0):0;
         const fc=n=>fmtC(n,eTab); // local currency formatter
         const hsLink=id=>id?"https://app.hubspot.com/contacts/44093193/record/0-3/"+id:null;
@@ -1177,27 +1176,58 @@ function App(){
                   onChange:ev=>{fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({payment_date_override:ev.target.value||null})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],payment_date_override:ev.target.value||null};setAp(nd)})}})),
                 h("td",null,h("input",{type:"text",defaultValue:d.notes||"",placeholder:"Add note...",style:{fontSize:10,minWidth:150,border:"1px solid #E8E7E3",borderRadius:4,padding:"3px 6px",background:d.notes?"#FFFDE7":"#FAFAF8"},
                   onBlur:ev=>{if(ev.target.value!==(d.notes||"")){fetch("/api/ap/"+d.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:ev.target.value,notes_updated_by:"Nik"})}).then(()=>{const nd=[...ap];const idx=nd.findIndex(x=>x.id===d.id);if(idx>=0)nd[idx]={...nd[idx],notes:ev.target.value,notes_updated_at:new Date().toISOString()};setAp(nd)})}}}))
-              )))))
+              )))))),
+          // Stock POs for this entity
+          (()=>{const eStock=stockPOs.filter(p=>p.entity_id===eTab);
+            return eStock.length>0&&h("div",{className:"card section"},
+              h("div",{className:"card-hdr"},
+                h("span",null,"Stock PO Payments ("+eStock.length+")"),
+                h("span",null,fc(eStock.reduce((s,p)=>s+(p.deposit_amount||0)+(p.release_amount||0),0)))),
+              h("table",null,
+                h("thead",null,h("tr",null,["PO","Supplier","Deposit","Dep Due","Release","Rel Due","Total"].map(x=>h("th",{key:x,style:{fontSize:10}},x)))),
+                h("tbody",null,eStock.map(p=>h("tr",{key:p.id},
+                  h("td",{style:{fontWeight:600,color:C.warn}},p.po_ref),
+                  h("td",{style:{color:C.mid}},p.supplier),
+                  h("td",null,fc(p.deposit_amount||0)),
+                  h("td",{style:{fontSize:10}},dateFmt(p.deposit_due)),
+                  h("td",null,fc(p.release_amount||0)),
+                  h("td",{style:{fontSize:10}},dateFmt(p.release_due)),
+                  h("td",{style:{fontWeight:700}},fc((p.deposit_amount||0)+(p.release_amount||0)))
+                )))))})()
         )})(),
 
       // ═══ STOCK PAYMENTS ═══
       tab==="stock"&&h("div",null,
         h("div",{className:"card section"},
-          h("div",{className:"card-hdr"},h("span",null,"Stock PO Payments \u2014 Bureau Ops"),
-            h("a",{href:"https://bureau-ops.withbureau.com",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none"}},"Open Bureau Ops \u2197")),
+          h("div",{className:"card-hdr"},
+            h("span",null,"Stock PO Payments \u2014 Aggregate (USD)"),
+            h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+              h("span",{style:{fontSize:10,color:C.mid}},"Detail in Entity Cashflow tab"),
+              h("a",{href:"https://bureau.pages.dev",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none"}},"Bureau Ops \u2197"))),
           h("table",null,
-            h("thead",null,h("tr",null,["Entity","PO","Supplier","Deposit","Dep Due","Release","Rel Due","Total","Status"].map(x=>h("th",{key:x},x)))),
-            h("tbody",null,stockPOs.map(po=>h("tr",{key:po.id},
-              h("td",null,h("span",{style:{color:C.ent[po.entity_id],fontWeight:600}},po.entity_id)),
-              h("td",{style:{fontWeight:600,color:C.warn}},po.po_ref),
-              h("td",{style:{color:C.mid}},po.supplier),
-              h("td",null,fmtF(po.deposit_amount)),
-              h("td",{style:{fontSize:10}},dateFmt(po.deposit_due)),
-              h("td",null,fmtF(po.release_amount)),
-              h("td",{style:{fontSize:10}},dateFmt(po.release_due)),
-              h("td",{style:{fontWeight:600}},fmtF((po.deposit_amount||0)+(po.release_amount||0))),
-              h("td",null,h("span",{className:"badge current"},"pending"))
-            ))))
+            h("thead",null,h("tr",null,["Entity","POs","Total Deposit (USD)","Total Release (USD)","Grand Total (USD)",""].map(x=>h("th",{key:x},x)))),
+            h("tbody",null,
+              ["US","CA","UK","AU"].map(eId=>{
+                const eStock=stockPOs.filter(p=>p.entity_id===eId);
+                if(!eStock.length)return null;
+                const fx=(entMap[eId]||{}).fx_rate||1;
+                const depTotal=eStock.reduce((s,p)=>s+(p.deposit_amount||0),0);
+                const relTotal=eStock.reduce((s,p)=>s+(p.release_amount||0),0);
+                const grandTotal=depTotal+relTotal;
+                return h("tr",{key:eId},
+                  h("td",{style:{fontWeight:600,color:C.ent[eId]}},eId),
+                  h("td",null,eStock.length),
+                  h("td",null,fmt(Math.round(depTotal*fx))),
+                  h("td",null,fmt(Math.round(relTotal*fx))),
+                  h("td",{style:{fontWeight:700}},fmt(Math.round(grandTotal*fx))),
+                  h("td",null,h("button",{className:"btn btn-sm btn-outline",onClick:()=>{setTab("entity");setETab(eId)}},"View Detail \u2192")))}),
+              h("tr",{style:{borderTop:"2px solid "+C.steel,fontWeight:700}},
+                h("td",null,"TOTAL"),
+                h("td",null,stockPOs.length),
+                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+(p.deposit_amount||0)*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
+                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+(p.release_amount||0)*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
+                h("td",null,fmt(Math.round(stockPOs.reduce((s,p)=>s+((p.deposit_amount||0)+(p.release_amount||0))*((entMap[p.entity_id]||{}).fx_rate||1),0)))),
+                h("td",null))))
         ),
         // Trade finance — editable with add/delete/CSV
         h("div",{className:"card section"},
