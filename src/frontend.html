@@ -649,16 +649,14 @@ function App(){
       // ═══ AR CHASING ═══
       tab==="ar"&&(()=>{
         const unpaid=ar.filter(d=>d.outstanding>0);
-        const DEFINITE_TERMS=['Due on Confirmation','Net 30','Net 30 from install','Net 30 from invoice','Net 60','Net 14','Net 15','50/50','50% on Confirmation / 50% before Delivery','50% on Confirmation / 50% on Delivery'];
-        const definite=unpaid.filter(d=>{const t=d.payment_terms||'';return DEFINITE_TERMS.some(dt=>t.includes(dt))});
-        const proposed=unpaid.filter(d=>{const t=d.payment_terms||'';return !DEFINITE_TERMS.some(dt=>t.includes(dt))});
+        const isDefiniteTerm=t=>{if(!t)return false;return ['Due on Confirmation','Net 30','Net 30 from install','Net 30 from invoice','Net 60','Net 14','Net 15'].includes(t)||t.includes('50/50')||t.includes('50%')};
+        const definite=unpaid.filter(d=>isDefiniteTerm(d.payment_terms));
+        const proposed=unpaid.filter(d=>!isDefiniteTerm(d.payment_terms));
         const missingInv=unpaid.filter(d=>!d.invoice_status||d.invoice_status==='');
         const justClosed=unpaid.filter(d=>d.just_closed);
-        const isDirect=d=>['Inbound','Outbound','Return Customer','RFP/Tenders'].includes(d.sales_channel);
-        const isChannel=d=>['Dealers','Architect/Designer','Builder','Design & Build'].includes(d.sales_channel);
-        const fxR={US:1,CA:0.71,UK:1.33,AU:0.68,EUR:1.08};
-        const toUSD=(d)=>Math.round((d.outstanding||0)*(fxR[d.entity_id]||1));
+        const toUSD=(d)=>Math.round((d.outstanding||0)*((entMap[d.entity_id]||{}).fx_rate||1));
         const regionOrder=['AU','UK','US','CA'];
+        const regionLabel={AU:'AUS',UK:'UK',US:'USA',CA:'CAD'};
 
         const DealRow=(d,showTermsNote)=>h("tr",{key:d.id},
           h("td",{style:{fontWeight:500,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
@@ -667,39 +665,35 @@ function App(){
           h("td",null,h("span",{style:{color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
           h("td",{style:{color:C.mid}},d.currency),
           h("td",{style:{fontSize:10}},fmtF(d.amount)),
-          h("td",{style:{fontSize:10,color:C.ok}},d.paid?fmtF(d.paid):"—"),
+          h("td",{style:{fontSize:10,color:C.ok}},d.paid?fmtF(d.paid):"\u2014"),
           h("td",{style:{fontWeight:600}},fmtF(d.outstanding)),
           h("td",{style:{fontWeight:600,color:C.mid,fontSize:10}},fmtF(toUSD(d))),
-          h("td",{style:{color:C.mid,fontSize:9,maxWidth:130}},
-            d.payment_terms==='Other'&&d.payment_terms_other?h("span",{title:d.payment_terms_other},"\u2139\ufe0f "+d.payment_terms_other.slice(0,30)):d.payment_terms||"—"),
+          h("td",{style:{fontSize:9,maxWidth:160,whiteSpace:"normal",lineHeight:"1.3"}},
+            d.payment_terms==='Other'&&d.payment_terms_other
+              ?h("span",{style:{display:"flex",alignItems:"flex-start",gap:3}},
+                  h("span",{style:{background:C.blue,color:"#fff",borderRadius:2,padding:"0 3px",fontSize:8,flexShrink:0,marginTop:1}},"i"),
+                  h("span",null,d.payment_terms_other))
+              :(d.payment_terms||"\u2014")),
           h("td",{style:{fontSize:10}},dateFmt(d.close_date)),
-          h("td",{style:{fontSize:10,color:C.mid}},d.age_days||"—"),
+          h("td",{style:{fontSize:10,color:C.mid}},d.age_days||"\u2014"),
           h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
           h("td",null,h("span",{className:"badge "+(d.overdue?"true":"false")},d.overdue?"Yes":"No")),
           h("td",null,d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{fontSize:9,color:C.blue}},"\u2197"):null)
         );
 
         const DealTable=(deals,showTermsNote)=>{
-          const direct=deals.filter(isDirect).sort((a,b)=>b.outstanding-a.outstanding);
-          const channel=deals.filter(isChannel).sort((a,b)=>b.outstanding-a.outstanding);
-          const other=deals.filter(d=>!isDirect(d)&&!isChannel(d)).sort((a,b)=>b.outstanding-a.outstanding);
-          const Section=(title,items)=>{
-            const byRegion={};regionOrder.forEach(r=>{const rd=items.filter(d=>d.entity_id===r);if(rd.length)byRegion[r]=rd});
-            return h("div",null,
-              h("tr",null,h("td",{colSpan:14,style:{fontWeight:700,fontSize:12,color:C.steel,paddingTop:12,background:"#F5F4F0"}},title)),
-              Object.entries(byRegion).map(([r,rd])=>h(React.Fragment,{key:r},
-                h("tr",null,h("td",{colSpan:14,style:{fontSize:10,fontWeight:600,color:C.ent[r],paddingTop:6}},"── "+{AU:"AUS",UK:"UK",US:"USA",CA:"CAD"}[r]+" ("+rd.length+" deals) ──")),
-                rd.map(d=>DealRow(d,showTermsNote))
-              ))
-            )};
+          const byRegion={};
+          regionOrder.forEach(r=>{const rd=deals.filter(d=>d.entity_id===r).sort((a,b)=>(b.outstanding||0)-(a.outstanding||0));if(rd.length)byRegion[r]=rd});
           return h("table",null,
             h("thead",null,h("tr",null,["Deal","Owner","Entity","Cur","Amount","Paid","Outstanding","USD","Terms","Closed","Age","Promised","Overdue",""].map(x=>h("th",{key:x},x)))),
             h("tbody",null,
-              direct.length>0&&Section("DIRECT",direct),
-              channel.length>0&&Section("CHANNEL",channel),
-              other.length>0&&Section("OTHER",other)
-            )
-          );
+              regionOrder.map(r=>{
+                const rd=byRegion[r];if(!rd)return null;
+                return h(React.Fragment,{key:r},
+                  h("tr",null,h("td",{colSpan:14,style:{fontSize:10,fontWeight:600,color:C.ent[r],paddingTop:8,borderBottom:"none"}},
+                    "\u2014 "+regionLabel[r]+" ("+rd.length+" deal"+(rd.length!==1?"s":"")+") \u2014")),
+                  rd.map(d=>DealRow(d,showTermsNote)))})
+            ));
         };
 
         const ARSUBS=[{id:"summary",l:"Summary"},{id:"definite",l:"Definite ("+definite.length+")"},{id:"proposed",l:"Proposed ("+proposed.length+")"},{id:"missing",l:"Missing Inv ("+missingInv.length+")"},{id:"justclosed",l:"Just Closed ("+justClosed.length+")"},{id:"recon",l:"Reconciliation"}];
@@ -716,11 +710,11 @@ function App(){
                {l:"Missing Invoices",v:missingInv.length+" deals",s:"No invoice raised",c:C.bad}
               ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))),
             h("div",{className:"card",style:{marginBottom:16}},
-              h("div",{className:"card-hdr"},"Outstanding by Region — Definite Chases (USD)"),
-              h("table",null,h("thead",null,h("tr",null,["Region","Direct (USD)","Channel (USD)","Total (USD)"].map(x=>h("th",{key:x},x)))),
-                h("tbody",null,regionOrder.map(r=>{const rd=definite.filter(d=>d.entity_id===r);const dir=rd.filter(isDirect);const ch=rd.filter(isChannel);
-                  return h("tr",{key:r},h("td",{style:{fontWeight:600,color:C.ent[r]}},{AU:"AUS",UK:"UK",US:"USA",CA:"CAD"}[r]),
-                    h("td",null,fmtF(dir.reduce((s,d)=>s+toUSD(d),0))),h("td",null,ch.length?fmtF(ch.reduce((s,d)=>s+toUSD(d),0)):"—"),h("td",{style:{fontWeight:700}},fmtF(rd.reduce((s,d)=>s+toUSD(d),0))))}
+              h("div",{className:"card-hdr"},"Outstanding by Region (USD)"),
+              h("table",null,h("thead",null,h("tr",null,["Region","Definite (USD)","Proposed (USD)","Total (USD)","Deals"].map(x=>h("th",{key:x},x)))),
+                h("tbody",null,regionOrder.map(r=>{const rdDef=definite.filter(d=>d.entity_id===r);const rdProp=proposed.filter(d=>d.entity_id===r);const allR=unpaid.filter(d=>d.entity_id===r);
+                  return h("tr",{key:r},h("td",{style:{fontWeight:600,color:C.ent[r]}},regionLabel[r]),
+                    h("td",null,fmtF(rdDef.reduce((s,d)=>s+toUSD(d),0))),h("td",null,rdProp.length?fmtF(rdProp.reduce((s,d)=>s+toUSD(d),0)):"\u2014"),h("td",{style:{fontWeight:700}},fmtF(allR.reduce((s,d)=>s+toUSD(d),0))),h("td",{style:{color:C.mid}},allR.length))}
                 )))
             ),
             h("div",{className:"card"},
@@ -969,8 +963,7 @@ function App(){
 
       // ═══ AP SCHEDULE ═══
       tab==="ap"&&(()=>{
-        const fxR={US:1,CA:0.71,UK:1.33,AU:0.68};
-        const toUSD=(v,eId)=>Math.round((v||0)*(fxR[eId]||1));
+        const toUSD=(v,eId)=>Math.round((v||0)*((entMap[eId]||{}).fx_rate||1));
         const EIDs=["US","CA","UK","AU"];
         const startDate=inputs?.settings?.week_start_date||'2026-03-07';
         const weekStarts=Array.from({length:11},(_,i)=>{const d=new Date(startDate);d.setDate(d.getDate()+i*7);return d});
