@@ -89,47 +89,55 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const apRates=(inputs.apRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
 
   // HubSpot mode: bucket deals by payment schedule (terms-aware with 10-day lag)
-  let hsWkAmounts=null, hsOverdueTotal=0, hsArDealsByWeek=null;
+  let hsWkScheduled=null, hsWkOverdue=null, hsOverdueTotal=0, hsArDealsByWeek=null;
   const PAY_DELAY=10; // days lag after milestone
   function addDaysW(ds,days){if(!ds)return null;const d=new Date(ds+'T00:00:00Z');d.setDate(d.getDate()+days);return d}
   function paySchedule(d){
     const t=d.payment_terms||'',amt=d.outstanding||0,prom=d.promised_date,inst=d.install_date;
-    if(t.includes('50/50')) return [{pct:50,date:prom?addDaysW(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDaysW(inst,PAY_DELAY):null,label:'50% install'}];
-    if(t.includes('Due on Confirmation')) return [{pct:100,date:prom?addDaysW(prom,PAY_DELAY):null,label:'Due on confirmation'}];
-    if(t.includes('Net 30 from install')) return [{pct:100,date:inst?addDaysW(inst,30):null,label:'Net 30 install'}];
-    if(t.includes('Net 30')) return [{pct:100,date:prom?addDaysW(prom,30):null,label:'Net 30'}];
+    if(t.includes('50/50')){
+      const d1=prom?addDaysW(prom,14):null; // 50% due 14 days from confirmation
+      const d2=inst?addDaysW(inst,10):null; // 50% due 10 days after install
+      return [{pct:50,date:d1,label:'50% on confirmation'},{pct:50,date:d2,label:'50% post-install'}];
+    }
+    if(t.includes('Due on Confirmation')) return [{pct:100,date:prom?addDaysW(prom,14):null,label:'Due on confirmation'}];
+    if(t.includes('Net 30 from install')) return [{pct:100,date:inst?addDaysW(inst,30):null,label:'Net 30 from install'}];
+    if(t.includes('Net 30 from invoice')||t.includes('Net 30')) return [{pct:100,date:prom?addDaysW(prom,30):null,label:'Net 30'}];
     if(t.includes('Net 60')) return [{pct:100,date:prom?addDaysW(prom,60):null,label:'Net 60'}];
-    return [{pct:100,date:prom?addDaysW(prom,PAY_DELAY):null,label:t||'Standard'}];
+    if(t.includes('Net 14')||t.includes('Net 15')) return [{pct:100,date:prom?addDaysW(prom,14):null,label:'Net 14'}];
+    return [{pct:100,date:prom?addDaysW(prom,14):null,label:t||'Standard'}];
   }
   if(arMode==='hubspot'){
-    const deals=(inputs.arDeals[eId]||[]).filter(d=>d.outstanding>0);
+    // Only include invoiced deals with outstanding balance
+    const deals=(inputs.arDeals[eId]||[]).filter(d=>d.outstanding>0&&d.invoice_status);
     const wk0Start=weeks[0].start;
-    const wkAmts=Array(N).fill(0);
+    const wkScheduledAmts=Array(N).fill(0);
     const wkDeals=Array.from({length:N},()=>[]);
     const overdue=[];
     deals.forEach(d=>{
       const sched=paySchedule(d);
-      let placed=false;
       sched.forEach(s=>{
         const payAmt=Math.round((d.outstanding||0)*s.pct/100);
-        if(!s.date){overdue.push({deal_name:d.deal_name,amount:payAmt,label:s.label});return}
+        if(!s.date){overdue.push({name:d.deal_name,amount:payAmt,label:s.label});return}
         const payDate=s.date;
-        if(payDate<wk0Start){overdue.push({deal_name:d.deal_name,amount:payAmt,label:s.label});return}
+        if(payDate<wk0Start){overdue.push({name:d.deal_name,amount:payAmt,label:s.label});return}
         for(let i=0;i<N;i++){
           if(payDate>=weeks[i].start&&payDate<=weeks[i].end){
-            wkAmts[i]+=payAmt;
+            wkScheduledAmts[i]+=payAmt;
             wkDeals[i].push({name:d.deal_name+(sched.length>1?' ('+s.label+')':''),amount:payAmt,ticket:d.has_open_ticket?1:0,ticketSubject:d.ticket_subject||''});
-            placed=true;break;
+            break;
           }
         }
       });
     });
     hsOverdueTotal=overdue.reduce((s,d)=>s+(d.amount||0),0);
     const overflowRates=(inputs.arHubspotOverflow[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
-    hsWkAmounts=wkAmts.map((dated,i)=>{
+    hsWkScheduled=wkScheduledAmts;
+    hsWkOverdue=overflowRates.map((_,i)=>{
       const ofRate=overflowRates.find(r=>r.week_num===i+1)?.overflow_pct||0;
-      return dated+hsOverdueTotal*ofRate;
+      return hsOverdueTotal*ofRate;
     });
+    // Pad to N weeks
+    while(hsWkOverdue.length<N) hsWkOverdue.push(0);
     hsArDealsByWeek=wkDeals;
   }
 
@@ -166,18 +174,22 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   for(let w=0;w<N;w++){
     const wk=weeks[w], open=bal;
 
-    // INFLOWS
-    let overdueAR;
-    if(arMode==='hubspot'&&hsWkAmounts){
-      overdueAR=hsWkAmounts[w]||0;
+    // INFLOWS — split into scheduled AR (dated deals) and overdue AR (undated/past-due overflow)
+    let arScheduled=0, arOverdue=0;
+    if(arMode==='hubspot'&&hsWkScheduled){
+      arScheduled=hsWkScheduled[w]||0;
+      arOverdue=hsWkOverdue[w]||0;
     } else {
       const arRate=arRates[w]?.rate||0;
-      overdueAR=arTotal*arRate;
+      arScheduled=arTotal*arRate; // in aggregate mode, all AR is "scheduled"
     }
-    if(arDelayPct>0&&arDelayWks>0){ overdueAR-=overdueAR*arDelayPct; }
+    let totalAR=arScheduled+arOverdue;
+    if(arDelayPct>0&&arDelayWks>0){ totalAR-=totalAR*arDelayPct; arScheduled=totalAR*arScheduled/(arScheduled+arOverdue||1); arOverdue=totalAR-arScheduled; }
     if(arDelayPct>0&&arDelayWks>0&&w>=arDelayWks){
-      const srcWkAR=arMode==='hubspot'&&hsWkAmounts?(hsWkAmounts[w-arDelayWks]||0):(arTotal*(arRates[w-arDelayWks]?.rate||0));
-      overdueAR+=srcWkAR*arDelayPct;
+      const srcSched=arMode==='hubspot'&&hsWkScheduled?(hsWkScheduled[w-arDelayWks]||0):(arTotal*(arRates[w-arDelayWks]?.rate||0));
+      const srcOver=arMode==='hubspot'&&hsWkOverdue?(hsWkOverdue[w-arDelayWks]||0):0;
+      const delayed=(srcSched+srcOver)*arDelayPct;
+      totalAR+=delayed; arScheduled+=delayed;
     }
 
     let newOrdersCash=0;
@@ -186,7 +198,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
       const ramp=Math.min(1,(active+1)/Math.max(no.ramp_weeks,1));
       newOrdersCash=adjWeeklyRev*ramp;
     }
-    const totIn=overdueAR+newOrdersCash;
+    const totIn=totalAR+newOrdersCash;
 
     // OUTFLOWS
     const apRate=apRates[w]?.rate||0;
@@ -249,23 +261,24 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     bal=open+totIn-totOut;
 
     // AR tooltip: deal breakdown for this week
-    let arDetails=[];
+    let arScheduledDetails=[], arOverdueDetails=[];
     if(arMode==='hubspot'&&hsArDealsByWeek){
       const dated=hsArDealsByWeek[w]||[];
-      if(dated.length) arDetails=arDetails.concat(dated.map(d=>({name:d.name,amount:Math.round(d.amount),ticket:d.ticket||0,ticketSubject:d.ticketSubject||''})));
+      if(dated.length) arScheduledDetails=dated.map(d=>({name:d.name,amount:Math.round(d.amount),ticket:d.ticket||0,ticketSubject:d.ticketSubject||''}));
       const ofRate=(inputs.arHubspotOverflow[eId]||[]).find(r=>r.week_num===w+1)?.overflow_pct||0;
-      if(ofRate>0&&hsOverdueTotal>0) arDetails.push({name:'Overdue ('+Math.round(ofRate*100)+'%)',amount:Math.round(hsOverdueTotal*ofRate)});
+      if(ofRate>0&&hsOverdueTotal>0) arOverdueDetails.push({name:'Overdue ('+Math.round(ofRate*100)+'%)',amount:Math.round(hsOverdueTotal*ofRate)});
     }
 
     weekData.push({
       week:wk.label, weekStart:wk.start.toISOString().slice(0,10), open:Math.round(open),
-      arIn:Math.round(overdueAR), newOrders:Math.round(newOrdersCash), totIn:Math.round(totIn),
+      arIn:Math.round(totalAR), arScheduled:Math.round(arScheduled), arOverdue:Math.round(arOverdue),
+      newOrders:Math.round(newOrdersCash), totIn:Math.round(totIn),
       vendorAP:Math.round(vendorAP), payroll:Math.round(payroll), marketing:Math.round(marketing),
       amexPayoff:Math.round(amexPayoff), stock:Math.round(stockOut), trade:Math.round(tradeOut),
       scheduled:Math.round(scheduledOut), rent:Math.round(rent), misc:Math.round(misc),
       diCogs:Math.round(installCosts), invRepl:Math.round(stockRepl), totOut:Math.round(totOut),
       close:Math.round(bal), closeExStock:Math.round(bal+(cumStock+=stockOut)),
-      arDetails, apDetails:apVendorsByWeek[w]||[], scheduledDetails,
+      arScheduledDetails, arOverdueDetails, apDetails:apVendorsByWeek[w]||[], scheduledDetails,
     });
   }
   return { entity:eId, currency:ent.currency||'USD', fxRate, openingCash, arTotal, apTotal, weeks:weekData };
