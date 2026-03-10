@@ -108,7 +108,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   }
   if(arMode==='hubspot'){
     // Only include invoiced deals with outstanding balance
-    const deals=(inputs.arDeals[eId]||[]).filter(d=>d.outstanding>0&&d.invoice_status);
+    const deals=(inputs.arDeals[eId]||[]).filter(d=>d.outstanding>0);
     const wk0Start=weeks[0].start;
     const wkScheduledAmts=Array(N).fill(0);
     const wkDeals=Array.from({length:N},()=>[]);
