@@ -541,7 +541,7 @@ function App(){
       j('/api/inputs'),
       j('/api/scenarios'),
       j('/api/syft-ar').catch(()=>({items:[]})),
-      fetch('https://bureau-a04.pages.dev/api/all').then(r=>r.ok?r.json():{orders:[]}).catch(()=>({orders:[]})),
+      fetch('/api/stock-pos-live').then(r=>r.ok?r.json():{orders:[]}).catch(()=>({orders:[]})),
     ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,bops])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
       // Use Bureau Ops live data for stock POs, fall back to D1
