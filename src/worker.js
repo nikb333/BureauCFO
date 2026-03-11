@@ -299,6 +299,317 @@ function calcConsolidated(results) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// ACCOUNTING SYNC (Xero + QBO)
+// ════════════════════════════════════════════════════════════════
+async function getValidToken(entityId, env) {
+  const row = await env.DB.prepare('SELECT * FROM accounting_tokens WHERE entity_id=?').bind(entityId).first();
+  if (!row) return null;
+  const expiresAt = new Date(row.expires_at);
+  if (expiresAt.getTime() - Date.now() < 5 * 60 * 1000) {
+    if (row.provider === 'xero') return await refreshXeroToken(entityId, row, env);
+    if (row.provider === 'qbo') return await refreshQBOToken(entityId, row, env);
+  }
+  return row;
+}
+
+async function refreshXeroToken(entityId, currentToken, env) {
+  const resp = await fetch('https://identity.xero.com/connect/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: currentToken.refresh_token,
+      client_id: env.XERO_CLIENT_ID,
+      client_secret: env.XERO_CLIENT_SECRET,
+    })
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error('Xero refresh failed: ' + JSON.stringify(data));
+  const expiresAt = new Date(Date.now() + data.expires_in * 1000).toISOString();
+  await env.DB.prepare(
+    'UPDATE accounting_tokens SET access_token=?, refresh_token=?, expires_at=?, updated_at=datetime("now") WHERE entity_id=?'
+  ).bind(data.access_token, data.refresh_token, expiresAt, entityId).run();
+  return { ...currentToken, access_token: data.access_token, refresh_token: data.refresh_token, expires_at: expiresAt };
+}
+
+async function refreshQBOToken(entityId, currentToken, env) {
+  const basicAuth = btoa(env.QBO_CLIENT_ID + ':' + env.QBO_CLIENT_SECRET);
+  const resp = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': 'Basic ' + basicAuth,
+      'Accept': 'application/json',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: currentToken.refresh_token,
+    })
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error('QBO refresh failed: ' + JSON.stringify(data));
+  const expiresAt = new Date(Date.now() + data.expires_in * 1000).toISOString();
+  await env.DB.prepare(
+    'UPDATE accounting_tokens SET access_token=?, refresh_token=?, expires_at=?, updated_at=datetime("now") WHERE entity_id=?'
+  ).bind(data.access_token, data.refresh_token, expiresAt, entityId).run();
+  return { ...currentToken, access_token: data.access_token, refresh_token: data.refresh_token, expires_at: expiresAt };
+}
+
+async function syncFromXero(entityId, token, env) {
+  const headers = {
+    'Authorization': 'Bearer ' + token.access_token,
+    'Xero-Tenant-Id': token.tenant_id,
+    'Accept': 'application/json',
+  };
+  let apItems = [], page = 1;
+  while (true) {
+    const url = 'https://api.xero.com/api.xro/2.0/Invoices?where=Type%3D%3D%22ACCPAY%22+AND+Status%3D%3D%22AUTHORISED%22&page=' + page;
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) throw new Error('Xero AP fetch failed: ' + resp.status);
+    const data = await resp.json();
+    const invoices = data.Invoices || [];
+    apItems.push(...invoices);
+    if (invoices.length < 100) break;
+    page++;
+  }
+  let arItems = [];
+  page = 1;
+  while (true) {
+    const url = 'https://api.xero.com/api.xro/2.0/Invoices?where=Type%3D%3D%22ACCREC%22+AND+Status%3D%3D%22AUTHORISED%22&page=' + page;
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) throw new Error('Xero AR fetch failed: ' + resp.status);
+    const data = await resp.json();
+    const invoices = data.Invoices || [];
+    arItems.push(...invoices);
+    if (invoices.length < 100) break;
+    page++;
+  }
+  const apRows = apItems.map(inv => ({
+    entity_id: entityId,
+    vendor_name: inv.Contact?.Name || 'Unknown',
+    amount: inv.AmountDue || 0,
+    total_amount: inv.Total || 0,
+    currency: inv.CurrencyCode || '',
+    due_date: inv.DueDate ? inv.DueDate.split('T')[0] : '',
+    invoice_number: inv.InvoiceNumber || '',
+    external_id: inv.InvoiceID || '',
+    source: 'xero',
+  }));
+  const arTotal = arItems.reduce((s, inv) => s + (inv.AmountDue || 0), 0);
+  const apTotal = apRows.reduce((s, r) => s + r.amount, 0);
+  return { ap: apRows, ar_total: arTotal, ap_total: apTotal };
+}
+
+async function syncFromQBO(entityId, token, env) {
+  const baseUrl = 'https://quickbooks.api.intuit.com/v3/company/' + token.tenant_id;
+  const headers = {
+    'Authorization': 'Bearer ' + token.access_token,
+    'Accept': 'application/json',
+  };
+  let apItems = [], startPos = 1;
+  while (true) {
+    const query = encodeURIComponent("SELECT * FROM Bill WHERE Balance > '0' STARTPOSITION " + startPos + " MAXRESULTS 1000");
+    const url = baseUrl + '/query?query=' + query + '&minorversion=73';
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) throw new Error('QBO AP fetch failed: ' + resp.status);
+    const data = await resp.json();
+    const bills = data.QueryResponse?.Bill || [];
+    apItems.push(...bills);
+    if (bills.length < 1000) break;
+    startPos += 1000;
+  }
+  let arItems = [];
+  startPos = 1;
+  while (true) {
+    const query = encodeURIComponent("SELECT * FROM Invoice WHERE Balance > '0' STARTPOSITION " + startPos + " MAXRESULTS 1000");
+    const url = baseUrl + '/query?query=' + query + '&minorversion=73';
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) throw new Error('QBO AR fetch failed: ' + resp.status);
+    const data = await resp.json();
+    const invoices = data.QueryResponse?.Invoice || [];
+    arItems.push(...invoices);
+    if (invoices.length < 1000) break;
+    startPos += 1000;
+  }
+  const apRows = apItems.map(bill => ({
+    entity_id: entityId,
+    vendor_name: bill.VendorRef?.name || 'Unknown',
+    amount: bill.Balance || 0,
+    total_amount: bill.TotalAmt || 0,
+    currency: bill.CurrencyRef?.value || 'USD',
+    due_date: bill.DueDate || '',
+    invoice_number: bill.DocNumber || '',
+    external_id: bill.Id || '',
+    source: 'qbo',
+  }));
+  const arTotal = arItems.reduce((s, inv) => s + (inv.Balance || 0), 0);
+  const apTotal = apRows.reduce((s, r) => s + r.amount, 0);
+  return { ap: apRows, ar_total: arTotal, ap_total: apTotal };
+}
+
+async function syncAllEntities(env, entityFilter) {
+  const EIDs = entityFilter ? [entityFilter] : ['AU', 'UK', 'US', 'CA'];
+  const results = {};
+  for (const eId of EIDs) {
+    try {
+      const token = await getValidToken(eId, env);
+      if (!token) { results[eId] = { error: 'No token configured' }; continue; }
+      let data;
+      if (token.provider === 'xero') data = await syncFromXero(eId, token, env);
+      else if (token.provider === 'qbo') data = await syncFromQBO(eId, token, env);
+      else { results[eId] = { error: 'Unknown provider: ' + token.provider }; continue; }
+      // Replace synced AP rows, preserve manual overrides
+      await env.DB.prepare("DELETE FROM ap_overrides WHERE entity_id=? AND (source='xero' OR source='qbo')").bind(eId).run();
+      for (const row of data.ap) {
+        await env.DB.prepare(
+          'INSERT INTO ap_overrides (entity_id, vendor_name, amount, total_amount, currency, due_date, invoice_number, external_id, source) VALUES (?,?,?,?,?,?,?,?,?)'
+        ).bind(row.entity_id, row.vendor_name, row.amount, row.total_amount, row.currency, row.due_date, row.invoice_number, row.external_id, row.source).run();
+      }
+      // Update AR/AP totals
+      await env.DB.prepare(
+        'INSERT OR REPLACE INTO syft_reconciliation (entity_id, ar_total, ap_total, updated_at) VALUES (?,?,?,datetime("now"))'
+      ).bind(eId, data.ar_total, data.ap_total).run();
+      results[eId] = { ap_vendors: data.ap.length, ap_total: data.ap_total, ar_total: data.ar_total, provider: token.provider };
+    } catch (e) {
+      results[eId] = { error: e.message };
+    }
+  }
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_accounting_sync', datetime('now'))").run();
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════
+// GOOGLE SHEETS SYNC (Syft)
+// ════════════════════════════════════════════════════════════════
+const SYFT_SHEET_ID = '15b6zDRzdyzRi9prePo6ACd82MJmeqeRdYjX3lahNkDc';
+
+async function getGoogleAccessToken(env) {
+  const sa = JSON.parse(env.GOOGLE_SERVICE_ACCOUNT);
+  const now = Math.floor(Date.now() / 1000);
+  const b64url = str => btoa(str).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const payload = b64url(JSON.stringify({
+    iss: sa.client_email,
+    scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now, exp: now + 3600,
+  }));
+  const signingInput = header + '.' + payload;
+  const pemBody = sa.private_key.replace(/-----BEGIN PRIVATE KEY-----/, '').replace(/-----END PRIVATE KEY-----/, '').replace(/\s/g, '');
+  const keyBuf = Uint8Array.from(atob(pemBody), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('pkcs8', keyBuf, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(signingInput));
+  const sigB64 = b64url(String.fromCharCode(...new Uint8Array(sig)));
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: signingInput + '.' + sigB64 }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error('Google auth failed: ' + JSON.stringify(data));
+  return data.access_token;
+}
+
+async function syncFromSheet(env) {
+  const token = await getGoogleAccessToken(env);
+  const resp = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SYFT_SHEET_ID}/values/A1:CZ100?valueRenderOption=UNFORMATTED_VALUE`,
+    { headers: { Authorization: 'Bearer ' + token } }
+  );
+  const data = await resp.json();
+  if (!resp.ok) throw new Error('Sheet read failed: ' + JSON.stringify(data));
+  const rows = data.values || [];
+  if (rows.length < 8) throw new Error('Sheet has too few rows: ' + rows.length);
+
+  // Find section start columns from row 4 (index 3): "Australia - Customer Balances", etc.
+  const row4 = rows[3] || [];
+  const row7 = rows[6] || []; // header row
+  const EMAP = { australia: 'AU', canada: 'CA', uk: 'UK', usa: 'US' };
+  const sections = [];
+  for (let c = 0; c < row4.length; c++) {
+    const cell = String(row4[c] || '').trim();
+    if (!cell.includes('Balances')) continue;
+    const type = cell.includes('Customer') ? 'ar' : 'ap';
+    let entityId = null;
+    for (const [key, id] of Object.entries(EMAP)) {
+      if (cell.toLowerCase().includes(key)) { entityId = id; break; }
+    }
+    if (entityId) sections.push({ col: c, type, entityId });
+  }
+  sections.sort((a, b) => a.col - b.col);
+  for (let i = 0; i < sections.length; i++) {
+    sections[i].endCol = (i + 1 < sections.length) ? sections[i + 1].col : row7.length;
+  }
+
+  // Find "Total Due" column within a section's range (skip "% of Total")
+  function findTotalDueCol(startCol, endCol) {
+    for (let c = startCol; c < endCol; c++) {
+      const h = String(row7[c] || '').trim().toLowerCase();
+      if (h === 'total due') return c;
+    }
+    for (let c = startCol; c < endCol; c++) {
+      const h = String(row7[c] || '').trim().toLowerCase();
+      if (h.includes('total') && !h.includes('%')) return c;
+    }
+    return -1;
+  }
+
+  const results = {};
+  for (const eId of ['AU', 'UK', 'US', 'CA']) results[eId] = { ar_total: 0, ap_total: 0, ap: [] };
+
+  for (const section of sections) {
+    const tdCol = findTotalDueCol(section.col, section.endCol);
+    if (tdCol === -1) continue;
+    const eId = section.entityId;
+
+    if (section.type === 'ar') {
+      // Find "Total" summary row → AR total
+      for (let r = 7; r < rows.length; r++) {
+        const firstCell = String((rows[r] || [])[section.col] || '').trim().toLowerCase();
+        if (firstCell === 'total') { results[eId].ar_total = parseFloat((rows[r] || [])[tdCol]) || 0; break; }
+      }
+    } else {
+      // Find supplier name column
+      let nameCol = section.col;
+      for (let c = section.col; c < section.endCol; c++) {
+        if (String(row7[c] || '').trim().toLowerCase().includes('supplier')) { nameCol = c; break; }
+      }
+      // Read vendor rows until "Total" / "Percentage" / "Currency Rate"
+      for (let r = 7; r < rows.length; r++) {
+        const row = rows[r] || [];
+        const name = String(row[nameCol] || '').trim();
+        if (!name) continue;
+        const nl = name.toLowerCase();
+        if (nl === 'total' || nl.includes('percentage') || nl.includes('currency rate')) break;
+        const amount = parseFloat(row[tdCol]) || 0;
+        if (amount > 0) {
+          results[eId].ap.push({ entity_id: eId, vendor_name: name, amount: Math.round(amount * 100) / 100, source: 'syft' });
+        }
+      }
+      // AP total from Total row
+      for (let r = 7; r < rows.length; r++) {
+        const firstCell = String((rows[r] || [])[nameCol] || '').trim().toLowerCase();
+        if (firstCell === 'total') { results[eId].ap_total = parseFloat((rows[r] || [])[tdCol]) || 0; break; }
+      }
+    }
+  }
+
+  // Write to D1
+  for (const eId of ['AU', 'UK', 'US', 'CA']) {
+    const r = results[eId];
+    // Replace syft-sourced AP rows, preserve manual
+    await env.DB.prepare("DELETE FROM ap_overrides WHERE entity_id=? AND source='syft'").bind(eId).run();
+    for (const row of r.ap) {
+      await env.DB.prepare('INSERT INTO ap_overrides (entity_id, vendor_name, amount, source) VALUES (?,?,?,?)').bind(row.entity_id, row.vendor_name, row.amount, 'syft').run();
+    }
+    // Update AR/AP totals
+    await env.DB.prepare('INSERT OR REPLACE INTO syft_reconciliation (entity_id, ar_total, ap_total, as_of_date, updated_at) VALUES (?,?,?,date("now"),datetime("now"))').bind(eId, r.ar_total, r.ap_total).run();
+  }
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('syft_last_sync', datetime('now'))").run();
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════
 // ROUTES
 // ════════════════════════════════════════════════════════════════
 export default {
@@ -583,6 +894,19 @@ export default {
           "ALTER TABLE ar_overrides ADD COLUMN ticket_category TEXT",
           "ALTER TABLE ar_overrides ADD COLUMN invoice_number TEXT",
           "ALTER TABLE ap_overrides ADD COLUMN payment_date_override TEXT",
+          "ALTER TABLE ap_overrides ADD COLUMN invoice_number_ap TEXT",
+          "ALTER TABLE ap_overrides ADD COLUMN total_amount REAL",
+          "ALTER TABLE ap_overrides ADD COLUMN external_id TEXT",
+          "ALTER TABLE ap_overrides ADD COLUMN source TEXT DEFAULT 'manual'",
+          `CREATE TABLE IF NOT EXISTS accounting_tokens (
+            entity_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            access_token TEXT,
+            refresh_token TEXT NOT NULL,
+            expires_at TEXT,
+            updated_at TEXT DEFAULT (datetime('now'))
+          )`,
           `CREATE TABLE IF NOT EXISTS syft_ar_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_id TEXT NOT NULL,
@@ -624,8 +948,144 @@ export default {
         return json({success:true,id:r.meta.last_row_id});
       }
 
+      // ═══ SYNC ROUTES ═══
+      if(path==='/api/sync-sheet'&&method==='POST'){
+        const results=await syncFromSheet(env);
+        return json({success:true,synced:results,timestamp:new Date().toISOString()});
+      }
+
+      if(path==='/api/sync-accounting'&&method==='POST'){
+        const entityFilter=url.searchParams.get('entity');
+        const results=await syncAllEntities(env,entityFilter);
+        return json({success:true,synced:results,timestamp:new Date().toISOString()});
+      }
+
+      if(path==='/api/accounting-status'&&method==='GET'){
+        const tokens=(await env.DB.prepare('SELECT entity_id, provider, tenant_id, expires_at, updated_at FROM accounting_tokens').all()).results;
+        const lastSync=(await env.DB.prepare("SELECT value FROM settings WHERE key='syft_last_sync'").first())?.value;
+        return json({tokens,lastSync});
+      }
+
+      // ═══ XERO OAUTH ═══
+      if(path==='/api/auth/xero'&&method==='GET'){
+        const redirectUri=url.origin+'/api/auth/xero/callback';
+        const authUrl='https://login.xero.com/identity/connect/authorize?'+new URLSearchParams({
+          response_type:'code',
+          client_id:env.XERO_CLIENT_ID,
+          redirect_uri:redirectUri,
+          scope:'offline_access openid accounting.transactions.read accounting.contacts.read',
+          state:crypto.randomUUID(),
+        });
+        return Response.redirect(authUrl,302);
+      }
+
+      if(path==='/api/auth/xero/callback'&&method==='GET'){
+        const code=url.searchParams.get('code');
+        if(!code) return json({error:'No code'},400);
+        const redirectUri=url.origin+'/api/auth/xero/callback';
+        const tokenResp=await fetch('https://identity.xero.com/connect/token',{
+          method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded'},
+          body:new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:redirectUri,client_id:env.XERO_CLIENT_ID,client_secret:env.XERO_CLIENT_SECRET})
+        });
+        const tokenData=await tokenResp.json();
+        if(!tokenResp.ok) return json({error:'Token exchange failed',details:tokenData},400);
+        const connResp=await fetch('https://api.xero.com/connections',{headers:{'Authorization':'Bearer '+tokenData.access_token}});
+        const tenants=await connResp.json();
+        const expiresAt=new Date(Date.now()+tokenData.expires_in*1000).toISOString();
+        const mapped=[];
+        for(const t of tenants){
+          let entityId=null;
+          const name=(t.tenantName||'').toLowerCase();
+          if(name.includes('pty')||name.includes('australia')||name.includes(' au')) entityId='AU';
+          else if(name.includes('uk')||name.includes('limited')||name.includes('britain')) entityId='UK';
+          if(entityId){
+            await env.DB.prepare('INSERT OR REPLACE INTO accounting_tokens (entity_id,provider,tenant_id,access_token,refresh_token,expires_at) VALUES(?,?,?,?,?,?)')
+              .bind(entityId,'xero',t.tenantId,tokenData.access_token,tokenData.refresh_token,expiresAt).run();
+            mapped.push({entityId,tenantName:t.tenantName,tenantId:t.tenantId});
+          }
+        }
+        const html=`<!DOCTYPE html><html><body style="font-family:DM Sans,sans-serif;padding:40px;max-width:600px;margin:0 auto">
+          <h2 style="color:#213640">Xero Connected</h2>
+          <p>Mapped ${mapped.length} Xero tenant(s):</p>
+          ${mapped.map(m=>`<div style="padding:8px;margin:4px 0;background:#E2F5EC;border-radius:4px"><strong>${m.entityId}</strong> — ${m.tenantName}</div>`).join('')}
+          ${tenants.filter(t=>!mapped.find(m=>m.tenantId===t.tenantId)).map(t=>
+            `<div style="padding:8px;margin:4px 0;background:#FEF3D6;border-radius:4px">Unmapped: ${t.tenantName} (${t.tenantId.slice(0,8)}...) — manually insert into accounting_tokens</div>`).join('')}
+          <p style="margin-top:20px"><a href="/" style="color:#3171F1">Back to Dashboard</a></p>
+        </body></html>`;
+        return new Response(html,{headers:{'Content-Type':'text/html'}});
+      }
+
+      // ═══ QBO OAUTH ═══
+      if(path==='/api/auth/qbo'&&method==='GET'){
+        const redirectUri=url.origin+'/api/auth/qbo/callback';
+        const authUrl='https://appcenter.intuit.com/connect/oauth2?'+new URLSearchParams({
+          response_type:'code',
+          client_id:env.QBO_CLIENT_ID,
+          redirect_uri:redirectUri,
+          scope:'com.intuit.quickbooks.accounting',
+          state:crypto.randomUUID(),
+        });
+        return Response.redirect(authUrl,302);
+      }
+
+      if(path==='/api/auth/qbo/callback'&&method==='GET'){
+        const code=url.searchParams.get('code');
+        const realmId=url.searchParams.get('realmId');
+        if(!code||!realmId) return json({error:'Missing code or realmId'},400);
+        const basicAuth=btoa(env.QBO_CLIENT_ID+':'+env.QBO_CLIENT_SECRET);
+        const redirectUri=url.origin+'/api/auth/qbo/callback';
+        const tokenResp=await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',{
+          method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+basicAuth,'Accept':'application/json'},
+          body:new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:redirectUri})
+        });
+        const tokenData=await tokenResp.json();
+        if(!tokenResp.ok) return json({error:'QBO token exchange failed',details:tokenData},400);
+        // Fetch company info to determine entity
+        const compResp=await fetch('https://quickbooks.api.intuit.com/v3/company/'+realmId+'/companyinfo/'+realmId+'?minorversion=73',
+          {headers:{'Authorization':'Bearer '+tokenData.access_token,'Accept':'application/json'}});
+        const compData=await compResp.json();
+        const companyName=compData?.CompanyInfo?.CompanyName||'';
+        let entityId=null;
+        const nameLower=companyName.toLowerCase();
+        if(nameLower.includes('us')||nameLower.includes('inc')||nameLower.includes('america')||nameLower.includes('united states')) entityId='US';
+        else if(nameLower.includes('canada')||nameLower.includes('ca')) entityId='CA';
+        const expiresAt=new Date(Date.now()+tokenData.expires_in*1000).toISOString();
+        if(entityId){
+          await env.DB.prepare('INSERT OR REPLACE INTO accounting_tokens (entity_id,provider,tenant_id,access_token,refresh_token,expires_at) VALUES(?,?,?,?,?,?)')
+            .bind(entityId,'qbo',realmId,tokenData.access_token,tokenData.refresh_token,expiresAt).run();
+        }
+        const html=`<!DOCTYPE html><html><body style="font-family:DM Sans,sans-serif;padding:40px;max-width:600px;margin:0 auto">
+          <h2 style="color:#213640">QuickBooks Connected</h2>
+          <p><strong>Company:</strong> ${companyName}</p>
+          <p><strong>Realm ID:</strong> ${realmId}</p>
+          ${entityId
+            ?`<div style="padding:12px;background:#E2F5EC;border-radius:6px;margin:12px 0">Mapped to <strong>${entityId}</strong> entity</div>`
+            :`<div style="padding:12px;background:#FEF3D6;border-radius:6px;margin:12px 0">Could not auto-map "${companyName}" to US or CA. Manually insert into accounting_tokens with the correct entity_id.</div>`}
+          <p style="margin-top:16px;font-size:12px;color:#847D70">QBO connects one company at a time. Visit <a href="/api/auth/qbo">/api/auth/qbo</a> again for the other entity.</p>
+          <p style="margin-top:20px"><a href="/" style="color:#3171F1">Back to Dashboard</a></p>
+        </body></html>`;
+        return new Response(html,{headers:{'Content-Type':'text/html'}});
+      }
+
       return json({error:`Not found: ${path}`},404);
     } catch(e){ console.error('Worker error:',e); return json({error:e.message},500); }
   },
-  async scheduled(event,env){ console.log('Cron:',event.cron); },
+  async scheduled(event, env) {
+    console.log('Cron:', event.cron);
+    try {
+      const result = await syncFromSheet(env);
+      console.log('Sheet sync complete:', JSON.stringify(result));
+    } catch (e) {
+      console.error('Sheet sync failed:', e.message);
+      // Fallback to Xero/QBO if sheet sync fails
+      try {
+        const result2 = await syncAllEntities(env);
+        console.log('Xero/QBO sync complete:', JSON.stringify(result2));
+      } catch (e2) {
+        console.error('All sync failed:', e2.message);
+      }
+    }
+  },
 };
