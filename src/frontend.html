@@ -544,17 +544,8 @@ function App(){
       fetch('/api/stock-pos-live').then(r=>r.ok?r.json():{orders:[]}).catch(()=>({orders:[]})),
     ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,bops])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
-      // Use Bureau Ops live data for stock POs, fall back to D1
-      const bopsOrders=(bops.orders||[])
-        .filter(o=>o.depositStatus!=='paid'||o.releaseStatus!=='paid')
-        .map(o=>({
-          id:o.id||o.ref,entity_id:o.region,po_number:o.ref,supplier:o.supplier||'',currency:o.currency,
-          total_amount:o.totalValue||0,
-          deposit_amount:o.depositAmt||0,deposit_status:o.depositStatus||'unpaid',deposit_due:o.depositDue||'',
-          release_amount:o.releaseAmt||0,release_status:o.releaseStatus||'unpaid',release_due:o.releaseDue||'',
-          status:(o.depositStatus==='paid'&&o.releaseStatus==='paid')?'paid':(o.releaseStatus==='due'||o.depositStatus==='due')?'due':'pending',
-          source:'bureau-ops'
-        }));
+      // Use Bureau Ops live data for stock POs (already filtered/mapped by proxy), fall back to D1
+      const bopsOrders=bops.orders||[];
       setStockPOs(bopsOrders.length>0?bopsOrders:poD.orders||[]);
       setTradeLoans(lnD.loans||[]);
       setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setLoading(false);
