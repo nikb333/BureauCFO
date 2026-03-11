@@ -530,17 +530,18 @@ function App(){
   const [syftAr,setSyftAr]=us([]);
 
   const load=()=>{
+    const j=u=>fetch(u).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()});
     Promise.all([
-      fetch('/api/entities').then(r=>r.json()),
-      fetch('/api/ar').then(r=>r.json()),
-      fetch('/api/ap').then(r=>r.json()),
-      fetch('/api/stock-pos').then(r=>r.json()),
-      fetch('/api/trade-loans').then(r=>r.json()),
-      fetch('/api/waterfall?scenarios=1,2').then(r=>r.json()),
-      fetch('/api/inputs').then(r=>r.json()),
-      fetch('/api/scenarios').then(r=>r.json()),
-      fetch('/api/syft-ar').then(r=>r.json()).catch(()=>({items:[]})),
-      fetch('https://bureau-a04.pages.dev/api/all').then(r=>r.json()).catch(()=>({orders:[]})),
+      j('/api/entities'),
+      j('/api/ar'),
+      j('/api/ap'),
+      j('/api/stock-pos'),
+      j('/api/trade-loans'),
+      j('/api/waterfall?scenarios=1,2'),
+      j('/api/inputs'),
+      j('/api/scenarios'),
+      j('/api/syft-ar').catch(()=>({items:[]})),
+      fetch('https://bureau-a04.pages.dev/api/all').then(r=>r.ok?r.json():{orders:[]}).catch(()=>({orders:[]})),
     ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,bops])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
       // Use Bureau Ops live data for stock POs, fall back to D1
