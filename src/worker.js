@@ -363,20 +363,22 @@ export default {
         return json({orders:(await env.DB.prepare(q).all()).results});
       }
 
-      // Stock POs — live from Bureau Ops
+      // Stock POs — live from Bureau Ops (proxy to bypass Cloudflare Access)
       if(path==='/api/stock-pos-live'&&method==='GET'){
         try{
           const resp=await fetch('https://bureau-a04.pages.dev/api/all');
           const bops=await resp.json();
-          const orders=(bops.orders||[])
+          const raw=bops.orders||[];
+          const orders=raw
             .filter(o=>o.depositStatus!=='paid'||o.releaseStatus!=='paid')
             .map(o=>({
               id:o.id||o.ref,entity_id:o.region,po_number:o.ref,supplier:o.supplier||'',currency:o.currency,
               total_amount:o.totalValue||0,
               deposit_amount:o.depositAmt||0,deposit_status:o.depositStatus||'unpaid',deposit_due:o.depositDue||'',
               release_amount:o.releaseAmt||0,release_status:o.releaseStatus||'unpaid',release_due:o.releaseDue||'',
+              status:(o.releaseStatus==='due'||o.depositStatus==='due')?'due':'pending',
             }));
-          return json({orders,source:'bureau-ops',total:bops.orders?.length||0});
+          return json({orders,source:'bureau-ops',total:raw.length,sample:raw[0]||null});
         }catch(e){return json({orders:[],error:e.message})}
       }
 
@@ -620,22 +622,6 @@ export default {
         const r=await env.DB.prepare('INSERT INTO trade_loans(entity_id,reference,po_ref,outstanding,settlement,maturity_date,rate) VALUES(?,?,?,?,?,?,?)')
           .bind(body.entity_id||'AU',body.reference||'',body.po_ref||'',body.outstanding||0,body.settlement||0,body.maturity_date||'',body.rate||0).run();
         return json({success:true,id:r.meta.last_row_id});
-      }
-
-      if(path==='/api/stock-pos-live'&&method==='GET'){
-        const resp=await fetch('https://bureau-a04.pages.dev/api/all');
-        const bops=await resp.json();
-        const orders=(bops.orders||[])
-          .filter(o=>o.depositStatus!=='paid'||o.releaseStatus!=='paid')
-          .map(o=>({
-            id:o.id,entity_id:o.region,po_number:o.ref,supplier:o.supplier||'',
-            currency:o.currency,total_amount:o.totalValue||0,
-            deposit_amount:o.depositAmt||0,deposit_status:o.depositStatus||'unpaid',
-            deposit_due:o.depositDue||'',release_amount:o.releaseAmt||0,
-            release_status:o.releaseStatus||'unpaid',release_due:o.releaseDue||'',
-            status:(o.releaseStatus==='due'||o.depositStatus==='due')?'due':'pending',
-          }));
-        return json({orders});
       }
 
       return json({error:`Not found: ${path}`},404);
