@@ -21,6 +21,6 @@ database_id = "e9f1733a-d06b-45b5-806b-4f0cbb0c9f93"
 binding = "CONFIG"
 id = "10a8094fe3f542ba8e4f08de02cfd241"
 
-# Scheduled sync every 6 hours
+# Scheduled accounting sync daily at 6am UTC
 [triggers]
-crons = ["0 */6 * * *"]
+crons = ["0 6 * * *"]
