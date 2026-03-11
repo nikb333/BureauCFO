@@ -12,6 +12,7 @@
     "db:seed:remote": "wrangler d1 execute bureau-cfo --file=./schema/seed.sql --remote"
   },
   "devDependencies": {
+    "acorn": "^8.16.0",
     "wrangler": "^3.0.0"
   }
 }
