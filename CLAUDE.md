@@ -1,4 +1,10 @@
 # Bureau CFO Dashboard — CLAUDE.md
+
+## Git Workflow
+- Push all changes directly to `main`. Do NOT create branches or PRs.
+- After making changes: `git add . && git commit -m "<descriptive message>" && git push origin main`
+- Cloudflare auto-deploys from main within ~30 seconds.
+
 ## What This Is
 A Cloudflare Worker-based CFO dashboard for Bureau (withbureau.com) — a soundproof office booth company operating across 4 entities (US, CA, UK, AU). Replaces a V12 Excel cashflow model with a live web app backed by D1 database, pulling data from HubSpot CRM and Syft accounting.
 **Live URL:** https://bureau-cfo-worker.nik-d88.workers.dev/
