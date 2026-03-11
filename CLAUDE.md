@@ -40,6 +40,11 @@ schema/
 ```
 ## How the Frontend Works
 The frontend is a single HTML file with inline `<script>` using `React.createElement` (aliased as `h`). No JSX, no Babel, no bundler. React + ReactDOM loaded from CDN.
+
+> **BRACKET SAFETY:** The Entity Cashflow tab has deeply nested `h()` calls. After ANY edit to this section, verify the JS parses clean by running:
+> ```
+> node -e "require('acorn').parse(require('fs').readFileSync('src/frontend.html','utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1], {ecmaVersion:2020})"
+> ```
 Key patterns:
 ```javascript
 const h = React.createElement;
