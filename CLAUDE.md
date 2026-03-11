@@ -1,4 +1,10 @@
 # Bureau CFO Dashboard — CLAUDE.md
+
+## Git Workflow
+- Push all changes directly to `main`. Do NOT create branches or PRs.
+- After making changes: `git add . && git commit -m "<descriptive message>" && git push origin main`
+- Cloudflare auto-deploys from main within ~30 seconds.
+
 ## What This Is
 A Cloudflare Worker-based CFO dashboard for Bureau (withbureau.com) — a soundproof office booth company operating across 4 entities (US, CA, UK, AU). Replaces a V12 Excel cashflow model with a live web app backed by D1 database, pulling data from HubSpot CRM and Syft accounting.
 **Live URL:** https://bureau-cfo-worker.nik-d88.workers.dev/
@@ -34,6 +40,11 @@ schema/
 ```
 ## How the Frontend Works
 The frontend is a single HTML file with inline `<script>` using `React.createElement` (aliased as `h`). No JSX, no Babel, no bundler. React + ReactDOM loaded from CDN.
+
+> **BRACKET SAFETY:** The Entity Cashflow tab has deeply nested `h()` calls. After ANY edit to this section, verify the JS parses clean by running:
+> ```
+> node -e "require('acorn').parse(require('fs').readFileSync('src/frontend.html','utf8').match(/<script[^>]*>([\s\S]*?)<\/script>/)[1], {ecmaVersion:2020})"
+> ```
 Key patterns:
 ```javascript
 const h = React.createElement;
