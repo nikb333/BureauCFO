@@ -479,6 +479,137 @@ async function syncAllEntities(env, entityFilter) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// GOOGLE SHEETS SYNC (Syft)
+// ════════════════════════════════════════════════════════════════
+const SYFT_SHEET_ID = '15b6zDRzdyzRi9prePo6ACd82MJmeqeRdYjX3lahNkDc';
+
+async function getGoogleAccessToken(env) {
+  const sa = JSON.parse(env.GOOGLE_SERVICE_ACCOUNT);
+  const now = Math.floor(Date.now() / 1000);
+  const b64url = str => btoa(str).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const payload = b64url(JSON.stringify({
+    iss: sa.client_email,
+    scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now, exp: now + 3600,
+  }));
+  const signingInput = header + '.' + payload;
+  const pemBody = sa.private_key.replace(/-----BEGIN PRIVATE KEY-----/, '').replace(/-----END PRIVATE KEY-----/, '').replace(/\s/g, '');
+  const keyBuf = Uint8Array.from(atob(pemBody), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('pkcs8', keyBuf, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(signingInput));
+  const sigB64 = b64url(String.fromCharCode(...new Uint8Array(sig)));
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: signingInput + '.' + sigB64 }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error('Google auth failed: ' + JSON.stringify(data));
+  return data.access_token;
+}
+
+async function syncFromSheet(env) {
+  const token = await getGoogleAccessToken(env);
+  const resp = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SYFT_SHEET_ID}/values/A1:CZ100?valueRenderOption=UNFORMATTED_VALUE`,
+    { headers: { Authorization: 'Bearer ' + token } }
+  );
+  const data = await resp.json();
+  if (!resp.ok) throw new Error('Sheet read failed: ' + JSON.stringify(data));
+  const rows = data.values || [];
+  if (rows.length < 8) throw new Error('Sheet has too few rows: ' + rows.length);
+
+  // Find section start columns from row 4 (index 3): "Australia - Customer Balances", etc.
+  const row4 = rows[3] || [];
+  const row7 = rows[6] || []; // header row
+  const EMAP = { australia: 'AU', canada: 'CA', uk: 'UK', usa: 'US' };
+  const sections = [];
+  for (let c = 0; c < row4.length; c++) {
+    const cell = String(row4[c] || '').trim();
+    if (!cell.includes('Balances')) continue;
+    const type = cell.includes('Customer') ? 'ar' : 'ap';
+    let entityId = null;
+    for (const [key, id] of Object.entries(EMAP)) {
+      if (cell.toLowerCase().includes(key)) { entityId = id; break; }
+    }
+    if (entityId) sections.push({ col: c, type, entityId });
+  }
+  sections.sort((a, b) => a.col - b.col);
+  for (let i = 0; i < sections.length; i++) {
+    sections[i].endCol = (i + 1 < sections.length) ? sections[i + 1].col : row7.length;
+  }
+
+  // Find "Total Due" column within a section's range (skip "% of Total")
+  function findTotalDueCol(startCol, endCol) {
+    for (let c = startCol; c < endCol; c++) {
+      const h = String(row7[c] || '').trim().toLowerCase();
+      if (h === 'total due') return c;
+    }
+    for (let c = startCol; c < endCol; c++) {
+      const h = String(row7[c] || '').trim().toLowerCase();
+      if (h.includes('total') && !h.includes('%')) return c;
+    }
+    return -1;
+  }
+
+  const results = {};
+  for (const eId of ['AU', 'UK', 'US', 'CA']) results[eId] = { ar_total: 0, ap_total: 0, ap: [] };
+
+  for (const section of sections) {
+    const tdCol = findTotalDueCol(section.col, section.endCol);
+    if (tdCol === -1) continue;
+    const eId = section.entityId;
+
+    if (section.type === 'ar') {
+      // Find "Total" summary row → AR total
+      for (let r = 7; r < rows.length; r++) {
+        const firstCell = String((rows[r] || [])[section.col] || '').trim().toLowerCase();
+        if (firstCell === 'total') { results[eId].ar_total = parseFloat((rows[r] || [])[tdCol]) || 0; break; }
+      }
+    } else {
+      // Find supplier name column
+      let nameCol = section.col;
+      for (let c = section.col; c < section.endCol; c++) {
+        if (String(row7[c] || '').trim().toLowerCase().includes('supplier')) { nameCol = c; break; }
+      }
+      // Read vendor rows until "Total" / "Percentage" / "Currency Rate"
+      for (let r = 7; r < rows.length; r++) {
+        const row = rows[r] || [];
+        const name = String(row[nameCol] || '').trim();
+        if (!name) continue;
+        const nl = name.toLowerCase();
+        if (nl === 'total' || nl.includes('percentage') || nl.includes('currency rate')) break;
+        const amount = parseFloat(row[tdCol]) || 0;
+        if (amount > 0) {
+          results[eId].ap.push({ entity_id: eId, vendor_name: name, amount: Math.round(amount * 100) / 100, source: 'syft' });
+        }
+      }
+      // AP total from Total row
+      for (let r = 7; r < rows.length; r++) {
+        const firstCell = String((rows[r] || [])[nameCol] || '').trim().toLowerCase();
+        if (firstCell === 'total') { results[eId].ap_total = parseFloat((rows[r] || [])[tdCol]) || 0; break; }
+      }
+    }
+  }
+
+  // Write to D1
+  for (const eId of ['AU', 'UK', 'US', 'CA']) {
+    const r = results[eId];
+    // Replace syft-sourced AP rows, preserve manual
+    await env.DB.prepare("DELETE FROM ap_overrides WHERE entity_id=? AND source='syft'").bind(eId).run();
+    for (const row of r.ap) {
+      await env.DB.prepare('INSERT INTO ap_overrides (entity_id, vendor_name, amount, source) VALUES (?,?,?,?)').bind(row.entity_id, row.vendor_name, row.amount, 'syft').run();
+    }
+    // Update AR/AP totals
+    await env.DB.prepare('INSERT OR REPLACE INTO syft_reconciliation (entity_id, ar_total, ap_total, as_of_date, updated_at) VALUES (?,?,?,date("now"),datetime("now"))').bind(eId, r.ar_total, r.ap_total).run();
+  }
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('syft_last_sync', datetime('now'))").run();
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════
 // ROUTES
 // ════════════════════════════════════════════════════════════════
 export default {
@@ -817,7 +948,12 @@ export default {
         return json({success:true,id:r.meta.last_row_id});
       }
 
-      // ═══ ACCOUNTING SYNC ROUTES ═══
+      // ═══ SYNC ROUTES ═══
+      if(path==='/api/sync-sheet'&&method==='POST'){
+        const results=await syncFromSheet(env);
+        return json({success:true,synced:results,timestamp:new Date().toISOString()});
+      }
+
       if(path==='/api/sync-accounting'&&method==='POST'){
         const entityFilter=url.searchParams.get('entity');
         const results=await syncAllEntities(env,entityFilter);
@@ -826,7 +962,7 @@ export default {
 
       if(path==='/api/accounting-status'&&method==='GET'){
         const tokens=(await env.DB.prepare('SELECT entity_id, provider, tenant_id, expires_at, updated_at FROM accounting_tokens').all()).results;
-        const lastSync=(await env.DB.prepare("SELECT value FROM settings WHERE key='last_accounting_sync'").first())?.value;
+        const lastSync=(await env.DB.prepare("SELECT value FROM settings WHERE key='syft_last_sync'").first())?.value;
         return json({tokens,lastSync});
       }
 
@@ -939,10 +1075,17 @@ export default {
   async scheduled(event, env) {
     console.log('Cron:', event.cron);
     try {
-      const result = await syncAllEntities(env);
-      console.log('Auto-sync complete:', JSON.stringify(result));
+      const result = await syncFromSheet(env);
+      console.log('Sheet sync complete:', JSON.stringify(result));
     } catch (e) {
-      console.error('Auto-sync failed:', e.message);
+      console.error('Sheet sync failed:', e.message);
+      // Fallback to Xero/QBO if sheet sync fails
+      try {
+        const result2 = await syncAllEntities(env);
+        console.log('Xero/QBO sync complete:', JSON.stringify(result2));
+      } catch (e2) {
+        console.error('All sync failed:', e2.message);
+      }
     }
   },
 };
