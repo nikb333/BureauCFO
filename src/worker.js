@@ -622,6 +622,22 @@ export default {
         return json({success:true,id:r.meta.last_row_id});
       }
 
+      if(path==='/api/stock-pos-live'&&method==='GET'){
+        const resp=await fetch('https://bureau-a04.pages.dev/api/all');
+        const bops=await resp.json();
+        const orders=(bops.orders||[])
+          .filter(o=>o.depositStatus!=='paid'||o.releaseStatus!=='paid')
+          .map(o=>({
+            id:o.id,entity_id:o.region,po_number:o.ref,supplier:o.supplier||'',
+            currency:o.currency,total_amount:o.totalValue||0,
+            deposit_amount:o.depositAmt||0,deposit_status:o.depositStatus||'unpaid',
+            deposit_due:o.depositDue||'',release_amount:o.releaseAmt||0,
+            release_status:o.releaseStatus||'unpaid',release_due:o.releaseDue||'',
+            status:(o.releaseStatus==='due'||o.depositStatus==='due')?'due':'pending',
+          }));
+        return json({orders});
+      }
+
       return json({error:`Not found: ${path}`},404);
     } catch(e){ console.error('Worker error:',e); return json({error:e.message},500); }
   },
