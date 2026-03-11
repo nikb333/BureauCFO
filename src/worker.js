@@ -677,7 +677,10 @@ export default {
       // Stock POs — live from Bureau Ops (proxy to bypass Cloudflare Access)
       if(path==='/api/stock-pos-live'&&method==='GET'){
         try{
-          const resp=await fetch('https://bureau-a04.pages.dev/api/all');
+          const ac=new AbortController();
+          const tid=setTimeout(()=>ac.abort(),5000);
+          const resp=await fetch('https://bureau-a04.pages.dev/api/all',{signal:ac.signal});
+          clearTimeout(tid);
           const bops=await resp.json();
           const raw=bops.orders||[];
           const orders=raw

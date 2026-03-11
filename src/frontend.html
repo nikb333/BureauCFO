@@ -542,14 +542,14 @@ function App(){
       j('/api/inputs'),
       j('/api/scenarios'),
       j('/api/syft-ar').catch(()=>({items:[]})),
-      fetch('/api/stock-pos-live').then(r=>r.ok?r.json():{orders:[]}).catch(()=>({orders:[]})),
-    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,bops])=>{
+    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
-      // Use Bureau Ops live data for stock POs (already filtered/mapped by proxy), fall back to D1
-      const bopsOrders=bops.orders||[];
-      setStockPOs(bopsOrders.length>0?bopsOrders:poD.orders||[]);
+      setStockPOs(poD.orders||[]);
       setTradeLoans(lnD.loans||[]);
       setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setLoading(false);
+      // Load Bureau Ops live data in background (don't block page load)
+      fetch('/api/stock-pos-live').then(r=>r.ok?r.json():{orders:[]}).catch(()=>({orders:[]}))
+        .then(bops=>{const o=bops.orders||[];if(o.length>0)setStockPOs(o)});
     }).catch(e=>{setError(e.message);setLoading(false)});
   };
   ue(load,[]);
