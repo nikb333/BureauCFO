@@ -62,9 +62,10 @@ const dateFmt=d=>d?new Date(d+"T00:00:00").toLocaleDateString("en-GB",{day:"2-di
 // SVG Chart — 3 lines: Total Cash, Ex Stock, Cash + Debt Headroom
 function Chart({data,height:H}){
   H=H||220;const W=900;if(!data||!data.length)return null;
+  const [hover,setHover]=us(null);
   const p={t:20,r:20,b:30,l:60},w=W-p.l-p.r,hh=H-p.t-p.b;
   let allV=data.map(d=>d.withStock).concat(data.map(d=>d.exStock)).concat(data.map(d=>d.withHeadroom||d.withStock));
-  const mn=Math.min(...allV)*1.1,mx=Math.max(...allV)*1.05,rng=mx-mn||1;
+  const rawMn=Math.min(...allV),mn=rawMn<0?rawMn*1.1:rawMn*0.9,mx=Math.max(...allV)*1.05,rng=mx-mn||1;
   const xp=i=>p.l+(i/(data.length-1))*w;
   const yp=v=>p.t+hh-((v-mn)/rng)*hh;
   const tks=[mn,mn+rng*.25,mn+rng*.5,mn+rng*.75,mx];
@@ -80,16 +81,39 @@ function Chart({data,height:H}){
   els.push(h("polyline",{key:"hr",points:ptsH,fill:"none",stroke:C.ok,strokeWidth:1.5,strokeDasharray:"6 3"}));
   // Line 2: Ex. Stock (blue dashed)
   const ptsE=data.map((d,i)=>xp(i)+","+yp(d.exStock)).join(" ");
-  els.push(h("polyline",{key:"e",points:ptsE,fill:"none",stroke:C.blue,strokeWidth:2,strokeDasharray:"6 3"}));
+  els.push(h("polyline",{key:"e",points:ptsE,fill:"none",stroke:C.blue,strokeWidth:0.75,strokeDasharray:"4 4",opacity:0.35}));
   // Line 1: Total Cash Flow (solid steel)
   const ptsW=data.map((d,i)=>xp(i)+","+yp(d.withStock)).join(" ");
   els.push(h("polyline",{key:"w",points:ptsW,fill:"none",stroke:C.steel,strokeWidth:2.5}));
+  // Hover zones — invisible wide rects per data point for easy hovering
+  data.forEach((d,i)=>{
+    const step=w/(data.length-1);
+    const x0=xp(i)-step/2,x1w=step;
+    els.push(h("rect",{key:"hz"+i,x:Math.max(p.l,x0),y:p.t,width:i===0||i===data.length-1?step/2:x1w,height:hh,fill:"transparent",
+      onMouseEnter:()=>setHover(i),onMouseLeave:()=>setHover(null),style:{cursor:"crosshair"}}));
+  });
   // Dots
   data.forEach((d,i)=>{
-    els.push(h("circle",{key:"cw"+i,cx:xp(i),cy:yp(d.withStock),r:3,fill:C.steel}));
-    els.push(h("circle",{key:"ce"+i,cx:xp(i),cy:yp(d.exStock),r:2.5,fill:C.blue}));
-    els.push(h("circle",{key:"ch"+i,cx:xp(i),cy:yp(d.withHeadroom||d.withStock),r:2,fill:C.ok}));
+    const isH=hover===i;
+    els.push(h("circle",{key:"cw"+i,cx:xp(i),cy:yp(d.withStock),r:isH?5:3,fill:C.steel,style:{transition:"r 0.1s"}}));
+    els.push(h("circle",{key:"ce"+i,cx:xp(i),cy:yp(d.exStock),r:isH?2.5:1,fill:C.blue,opacity:isH?0.5:0.25,style:{transition:"r 0.1s"}}));
+    els.push(h("circle",{key:"ch"+i,cx:xp(i),cy:yp(d.withHeadroom||d.withStock),r:isH?3.5:2,fill:C.ok,style:{transition:"r 0.1s"}}));
   });
+  // Hover vertical line + tooltip
+  if(hover!==null){
+    const d=data[hover],cx=xp(hover);
+    els.push(h("line",{key:"hline",x1:cx,x2:cx,y1:p.t,y2:p.t+hh,stroke:"#847D70",strokeWidth:1,strokeDasharray:"3 3",opacity:0.5}));
+    // Tooltip background + text
+    const tipW=150,tipH=52,tipX=cx+10>W-tipW-p.r?cx-tipW-10:cx+10,tipY=p.t+4;
+    els.push(h("rect",{key:"tbg",x:tipX,y:tipY,width:tipW,height:tipH,rx:4,fill:C.steel,opacity:0.95}));
+    els.push(h("text",{key:"tt0",x:tipX+8,y:tipY+14,fill:"#fff",fontSize:9,fontWeight:600,fontFamily:"DM Sans"},d.week));
+    els.push(h("text",{key:"tt1",x:tipX+8,y:tipY+27,fill:"#fff",fontSize:9,fontFamily:"DM Sans"},
+      h("tspan",{fill:"#fff"},"\u2501 Total Cash: "),h("tspan",{fill:C.yellow},fmt(d.withStock))));
+    els.push(h("text",{key:"tt2",x:tipX+8,y:tipY+38,fill:"#fff",fontSize:9,fontFamily:"DM Sans"},
+      h("tspan",{fill:"#fff"},"\u254C Ex. Stock: "),h("tspan",{fill:"#94C6FF"},fmt(d.exStock))));
+    els.push(h("text",{key:"tt3",x:tipX+8,y:tipY+49,fill:"#fff",fontSize:9,fontFamily:"DM Sans"},
+      h("tspan",{fill:"#fff"},"\u254C + Headroom: "),h("tspan",{fill:"#7EDBA8"},fmt(d.withHeadroom||d.withStock))));
+  }
   return h("svg",{width:"100%",viewBox:"0 0 "+W+" "+H,style:{display:"block"}},els);
 }
 
@@ -724,7 +748,7 @@ function App(){
               h("div",null,h("div",{style:{fontSize:14,fontWeight:600}},"13-Week Cash Position (USD)"),
                 h("div",{style:{fontSize:10,color:C.mid,display:"flex",gap:12,marginTop:2}},
                   h("span",null,h("span",{style:{color:C.steel}},"\u2501\u2501")," Total Cash"),
-                  h("span",null,h("span",{style:{color:C.blue}},"\u254C\u254C")," Cash ex. Stock"),
+                  h("span",{style:{opacity:0.4}},h("span",{style:{color:C.blue}},"\u254C\u254C")," Cash ex. Stock"),
                   h("span",null,h("span",{style:{color:C.ok}},"\u254C\u254C")," Cash + Debt Headroom")))),
             h(Chart,{data:waterfall.consolidated,height:240})
           )
