@@ -1219,9 +1219,15 @@ function App(){
             h("span",null,"Stock PO Payments \u2014 Aggregate (USD)"),
             h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
               h("span",{style:{fontSize:10,color:C.mid}},stockPOs.length+" outstanding POs"),
+              h("button",{className:"btn btn-sm btn-outline",onClick:()=>{
+                setSaving(true);fetch('/api/sync-bureau-ops',{method:'POST'}).then(r=>r.json()).then(d=>{
+                  if(d.success){load()}else{alert('Sync failed: '+(d.error||'unknown'))}
+                }).catch(e=>alert('Sync error: '+e.message)).finally(()=>setSaving(false));
+              }},saving?"\u23f3 Syncing\u2026":"\u21bb Sync from Bureau Ops"),
               h("a",{href:"https://bureau-a04.pages.dev",target:"_blank",className:"btn btn-sm btn-outline",style:{textDecoration:"none"}},"Open Bureau Ops \u2197"))),
           h("div",{style:{fontSize:10,color:C.mid,padding:"8px 16px",background:"#FAFAF8",borderBottom:"1px solid #E8E7E3"}},
-            "Sourced live from Bureau Ops. Entity-level detail available in the Entity Cashflow tab."),
+            "Synced from Bureau Ops into D1 (used by waterfall calculation).",
+            inputs?.settings?.bureau_ops_last_sync&&h("span",{style:{marginLeft:8}},"Last sync: "+inputs.settings.bureau_ops_last_sync)),
           h("table",null,
             h("thead",null,h("tr",null,["Entity","POs","Outstanding Deposits (USD)","Outstanding Releases (USD)","Total Outstanding (USD)",""].map(x=>h("th",{key:x},x)))),
             h("tbody",null,
