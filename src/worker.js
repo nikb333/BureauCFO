@@ -671,6 +671,68 @@ async function syncFromSheet(env) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// BUREAU OPS SYNC (Stock POs)
+// ════════════════════════════════════════════════════════════════
+const BUREAU_OPS_URL = 'https://bureau-a04.pages.dev/api/all';
+
+async function syncFromBureauOps(env) {
+  // Ensure status columns exist (migration)
+  try { await env.DB.prepare("ALTER TABLE stock_po_overrides ADD COLUMN deposit_status TEXT DEFAULT 'unpaid'").run(); } catch(e) {}
+  try { await env.DB.prepare("ALTER TABLE stock_po_overrides ADD COLUMN release_status TEXT DEFAULT 'unpaid'").run(); } catch(e) {}
+  try { await env.DB.prepare("ALTER TABLE stock_po_overrides ADD COLUMN po_number TEXT").run(); } catch(e) {}
+  try { await env.DB.prepare("ALTER TABLE stock_po_overrides ADD COLUMN currency TEXT").run(); } catch(e) {}
+  try { await env.DB.prepare("ALTER TABLE stock_po_overrides ADD COLUMN total_amount REAL DEFAULT 0").run(); } catch(e) {}
+
+  const ac = new AbortController();
+  const tid = setTimeout(() => ac.abort(), 15000);
+  const resp = await fetch(BUREAU_OPS_URL, { signal: ac.signal });
+  clearTimeout(tid);
+  if (!resp.ok) throw new Error('Bureau Ops fetch failed: ' + resp.status);
+  const bops = await resp.json();
+  const raw = bops.orders || [];
+
+  // Region → entity mapping
+  const regionMap = { US: 'US', CA: 'CA', UK: 'UK', AU: 'AU', usa: 'US', can: 'CA', gbr: 'UK', aus: 'AU' };
+
+  // Filter: keep POs with any outstanding payment
+  const orders = raw.filter(o => {
+    const depPaid = o.depositStatus === 'paid' || (!o.depositAmt && !o.depositDue);
+    const relPaid = o.releaseStatus === 'paid' || (!o.releaseAmt && !o.releaseDue);
+    return !(depPaid && relPaid);
+  });
+
+  // Clear bureau_ops-sourced POs and replace with fresh data
+  await env.DB.prepare("DELETE FROM stock_po_overrides WHERE source='bureau_ops'").run();
+
+  let inserted = 0;
+  for (const o of orders) {
+    const eId = regionMap[(o.region || '').toUpperCase()] || regionMap[o.region] || o.region;
+    if (!eId || !['US', 'CA', 'UK', 'AU'].includes(eId)) continue;
+    await env.DB.prepare(
+      `INSERT INTO stock_po_overrides (entity_id, po_ref, po_number, supplier, currency, total_amount, deposit_amount, deposit_due, deposit_status, release_amount, release_due, release_status, source, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'bureau_ops', datetime('now'))`
+    ).bind(
+      eId,
+      o.ref || o.id || '',
+      o.ref || o.id || '',
+      o.supplier || '',
+      o.currency || '',
+      o.totalValue || 0,
+      Math.abs(o.depositAmt || 0),
+      o.depositDue || null,
+      o.depositStatus || 'unpaid',
+      Math.abs(o.releaseAmt || 0),
+      o.releaseDue || null,
+      o.releaseStatus || 'unpaid',
+    ).run();
+    inserted++;
+  }
+
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('bureau_ops_last_sync', datetime('now'))").run();
+  return { total_from_ops: raw.length, inserted, skipped_paid: raw.length - orders.length };
+}
+
+// ════════════════════════════════════════════════════════════════
 // ROUTES
 // ════════════════════════════════════════════════════════════════
 export default {
@@ -740,7 +802,7 @@ export default {
         try{
           const ac=new AbortController();
           const tid=setTimeout(()=>ac.abort(),5000);
-          const resp=await fetch('https://bureau-a04.pages.dev/api/all',{signal:ac.signal});
+          const resp=await fetch(BUREAU_OPS_URL,{signal:ac.signal});
           clearTimeout(tid);
           const bops=await resp.json();
           const raw=bops.orders||[];
@@ -1024,6 +1086,11 @@ export default {
         return json({success:true,synced:results,timestamp:new Date().toISOString()});
       }
 
+      if(path==='/api/sync-bureau-ops'&&method==='POST'){
+        const results=await syncFromBureauOps(env);
+        return json({success:true,synced:results,timestamp:new Date().toISOString()});
+      }
+
       if(path==='/api/accounting-status'&&method==='GET'){
         const tokens=(await env.DB.prepare('SELECT entity_id, provider, tenant_id, expires_at, updated_at FROM accounting_tokens').all()).results;
         const lastSync=(await env.DB.prepare("SELECT value FROM settings WHERE key='syft_last_sync'").first())?.value;
@@ -1143,6 +1210,12 @@ export default {
       console.log('Sheet sync complete:', JSON.stringify(result));
     } catch (e) {
       console.error('Sheet sync FAILED:', e.message, e.stack);
+    }
+    try {
+      const result = await syncFromBureauOps(env);
+      console.log('Bureau Ops sync complete:', JSON.stringify(result));
+    } catch (e) {
+      console.error('Bureau Ops sync FAILED:', e.message, e.stack);
     }
   },
 };
