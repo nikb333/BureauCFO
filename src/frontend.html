@@ -1134,16 +1134,16 @@ function App(){
                 h("tr",null,h("td",{style:{color:C.bad,fontWeight:600,paddingTop:8},colSpan:9},"OUTFLOWS")),
                 h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660",cursor:"pointer",textDecoration:"underline",textDecorationStyle:"dotted"},onClick:()=>{setApEntity(eTab);setTab("ap")},title:"View AP schedule for "+eTab},"Vendor AP"),eWF.weeks.slice(0,8).map((w,i)=>{
                   const tip=(w.apDetails||[]).map(d=>d.name+": "+fc(d.amount)).join("\n");
-                  return h("td",{key:i,style:{textAlign:"right",color:w.vendorAP?C.bad:C.warm,cursor:tip?"help":"default"},title:tip||undefined},w.vendorAP?"-"+fc(w.vendorAP):"\u2014")})),
-                [{k:"payroll",l:"Payroll"},{k:"marketing",l:"Marketing"},{k:"amexPayoff",l:"Amex Payoff"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"},{k:"rent",l:"Rent"},{k:"misc",l:"Misc / Other"},{k:"diCogs",l:"Install Costs"},{k:"invRepl",l:"Stock Replacement"}].map(r=>h("tr",{key:r.k},h("td",{style:{paddingLeft:16,color:"#5A6660"}},r.l),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.bad:C.warm}},w[r.k]?"-"+fc(w[r.k]):"\u2014")))),
+                  return h("td",{key:i,style:{textAlign:"right",color:w.vendorAP?C.bad:C.warm,cursor:tip?"help":"default"},title:tip||undefined},w.vendorAP?fc(-Math.abs(w.vendorAP)):"\u2014")})),
+                [{k:"payroll",l:"Payroll"},{k:"marketing",l:"Marketing"},{k:"amexPayoff",l:"Amex Payoff"},{k:"stock",l:"Stock POs"},{k:"trade",l:"Trade Finance"},{k:"rent",l:"Rent"},{k:"misc",l:"Misc / Other"},{k:"diCogs",l:"Install Costs"},{k:"invRepl",l:"Stock Replacement"}].map(r=>h("tr",{key:r.k},h("td",{style:{paddingLeft:16,color:"#5A6660"}},r.l),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w[r.k]?C.bad:C.warm}},w[r.k]?fc(-Math.abs(w[r.k])):"\u2014")))),
                 // Scheduled payments broken out by description
                 (()=>{const schedItems={};
                   (eWF.weeks||[]).slice(0,8).forEach((w,i)=>{if(w.scheduledDetails)w.scheduledDetails.forEach(sd=>{if(!schedItems[sd.name])schedItems[sd.name]=Array(8).fill(0);schedItems[sd.name][i]=sd.amount})});
                   const names=Object.keys(schedItems);
                   return names.length>0?names.map(name=>h("tr",{key:"sched-"+name},h("td",{style:{paddingLeft:16,color:"#5A6660",fontSize:10}},name),
-                    schedItems[name].map((amt,i)=>h("td",{key:i,style:{textAlign:"right",color:amt?C.bad:C.warm,fontSize:10}},amt?"-"+fc(amt):"\u2014"))))
-                  :h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"Scheduled"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w.scheduled?C.bad:C.warm}},w.scheduled?"-"+fc(w.scheduled):"\u2014")))})(),
-                h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.bad}},"Total Out"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.bad}},"-"+fc(w.totOut)))),
+                    schedItems[name].map((amt,i)=>h("td",{key:i,style:{textAlign:"right",color:amt?C.bad:C.warm,fontSize:10}},amt?fc(-Math.abs(amt)):"\u2014"))))
+                  :h("tr",null,h("td",{style:{paddingLeft:16,color:"#5A6660"}},"Scheduled"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",color:w.scheduled?C.bad:C.warm}},w.scheduled?fc(-Math.abs(w.scheduled)):"\u2014")))})(),
+                h("tr",{style:{borderTop:"1px solid #E8E7E3"}},h("td",{style:{fontWeight:600,color:C.bad}},"Total Out"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:600,color:C.bad}},fc(-Math.abs(w.totOut))))),
                 h("tr",{style:{background:C.offWhite,borderTop:"2px solid #E8E7E3"}},h("td",{style:{fontWeight:700}},"Closing"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontWeight:700,color:w.close<0?C.bad:C.steel}},fc(w.close)))),
                 h("tr",null,h("td",{style:{fontSize:10,color:C.mid}},"Ex. Stock"),eWF.weeks.slice(0,8).map((w,i)=>h("td",{key:i,style:{textAlign:"right",fontSize:10,color:C.blue}},fc(w.closeExStock))))
               )
