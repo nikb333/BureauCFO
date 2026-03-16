@@ -1011,7 +1011,7 @@ function App(){
               h("span",{style:{fontSize:9,color:C.mid}},"Last sync: "+(inputs?.settings?.syft_last_sync||"never")),
               h("button",{style:{fontSize:10,padding:"4px 10px",border:"1px solid "+C.blue,borderRadius:4,background:"#EDF2FE",color:C.blue,cursor:"pointer",fontFamily:"inherit",fontWeight:600},
                 disabled:syncing,
-                onClick:()=>{setSyncing(true);fetch('/api/sync-sheet',{method:'POST'}).then(r=>r.json()).then(()=>load()).catch(e=>console.error('Sync failed:',e)).finally(()=>setSyncing(false))}
+                onClick:()=>{setSyncing(true);fetch('/api/sync-sheet',{method:'POST'}).then(r=>r.json().then(d=>r.ok?d:Promise.reject(new Error(d.error||'Sync failed: HTTP '+r.status)))).then(()=>load()).catch(e=>{console.error('Sync failed:',e);alert('Syft sync failed: '+e.message)}).finally(()=>setSyncing(false))}
               },syncing?"Syncing...":"Sync from Syft"))
           ),
 
@@ -1359,7 +1359,7 @@ function App(){
               h("div",{style:{fontSize:9,color:C.mid}},"Last sync: "+(inputs?.settings?.syft_last_sync||"never")+(" \u00b7 Auto-syncs daily at 6am UTC"))),
             h("button",{style:{fontSize:11,padding:"8px 16px",border:"none",borderRadius:6,background:C.blue,color:"#fff",cursor:"pointer",fontFamily:"inherit",fontWeight:600},
               disabled:syncing,
-              onClick:()=>{setSyncing(true);fetch('/api/sync-sheet',{method:'POST'}).then(r=>r.json()).then(r=>{console.log('Syft sync:',r);load()}).catch(e=>console.error(e)).finally(()=>setSyncing(false))}
+              onClick:()=>{setSyncing(true);fetch('/api/sync-sheet',{method:'POST'}).then(r=>r.json().then(d=>r.ok?d:Promise.reject(new Error(d.error||'Sync failed: HTTP '+r.status)))).then(r=>{console.log('Syft sync:',r);load()}).catch(e=>{console.error(e);alert('Syft sync failed: '+e.message)}).finally(()=>setSyncing(false))}
             },syncing?"Syncing...":"Sync Now"),
             h("div",{className:"grid-4",style:{width:"100%",marginTop:8}},
               ["AU","UK","US","CA"].map(eId=>{

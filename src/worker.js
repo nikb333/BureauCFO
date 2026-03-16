@@ -484,6 +484,7 @@ async function syncAllEntities(env, entityFilter) {
 const SYFT_SHEET_ID = '15b6zDRzdyzRi9prePo6ACd82MJmeqeRdYjX3lahNkDc';
 
 async function getGoogleAccessToken(env) {
+  if (!env.GOOGLE_SERVICE_ACCOUNT) throw new Error('GOOGLE_SERVICE_ACCOUNT secret is not configured. Add it in Cloudflare dashboard → Workers → Settings → Variables.');
   const sa = JSON.parse(env.GOOGLE_SERVICE_ACCOUNT);
   const now = Math.floor(Date.now() / 1000);
   const b64url = str => btoa(str).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -1081,14 +1082,7 @@ export default {
       const result = await syncFromSheet(env);
       console.log('Sheet sync complete:', JSON.stringify(result));
     } catch (e) {
-      console.error('Sheet sync failed:', e.message);
-      // Fallback to Xero/QBO if sheet sync fails
-      try {
-        const result2 = await syncAllEntities(env);
-        console.log('Xero/QBO sync complete:', JSON.stringify(result2));
-      } catch (e2) {
-        console.error('All sync failed:', e2.message);
-      }
+      console.error('Sheet sync FAILED:', e.message, e.stack);
     }
   },
 };
