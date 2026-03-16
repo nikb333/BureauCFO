@@ -144,8 +144,8 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
 
   // AR/AP totals from Syft
   const syft=inputs.syftRecon[eId]||{};
-  const arTotal=syft.ar_total||0;
-  const apTotal=syft.ap_total||(inputs.apVendors[eId]||[]).reduce((s,v)=>s+v.amount,0);
+  const arTotal=Math.abs(syft.ar_total||0);
+  const apTotal=Math.abs(syft.ap_total||(inputs.apVendors[eId]||[]).reduce((s,v)=>s+v.amount,0));
   const arRates=(inputs.arRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
   const apRates=(inputs.apRates[eId]||[]).sort((a,b)=>a.week_num-b.week_num);
 
@@ -267,7 +267,7 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
     // Track AP vendor breakdown for this week's tooltip
     if(apRate>0){
       apVendorList.forEach(v=>{
-        const vAmt=Math.round((v.amount||0)*apRate);
+        const vAmt=Math.round(Math.abs(v.amount||0)*apRate);
         if(vAmt>0) apVendorsByWeek[w].push({name:v.vendor_name,amount:vAmt});
       });
     }
