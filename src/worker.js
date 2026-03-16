@@ -58,15 +58,15 @@ async function loadAllInputs(DB) {
 function getWeekDates(startDate, n) {
   const weeks=[], s=new Date(startDate);
   // Week 1: today → next Sunday. Week 2+: Monday → Sunday.
-  // Labels show the end-of-week date (closing position date).
+  // Labels show week-start date (first week = "Today").
   const dow=s.getUTCDay(), daysToMon=dow===0?1:(8-dow);
   const firstEnd=new Date(s.getTime()+(daysToMon-1)*864e5);
   const fmtD=d=>`${d.getUTCDate()} ${d.toLocaleDateString('en-GB',{month:'short',timeZone:'UTC'})}`;
-  weeks.push({start:s,end:firstEnd,label:fmtD(firstEnd)});
+  weeks.push({start:s,end:firstEnd,label:'This wk'});
   const nextMon=new Date(s.getTime()+daysToMon*864e5);
   for(let i=1;i<n;i++){
     const ws=new Date(nextMon.getTime()+(i-1)*7*864e5), we=new Date(ws.getTime()+6*864e5);
-    weeks.push({start:ws,end:we,label:fmtD(we)});
+    weeks.push({start:ws,end:we,label:fmtD(ws)});
   }
   return weeks;
 }
