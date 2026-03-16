@@ -1012,7 +1012,7 @@ function App(){
               h("button",{style:{fontSize:10,padding:"4px 10px",border:"1px solid "+C.blue,borderRadius:4,background:"#EDF2FE",color:C.blue,cursor:"pointer",fontFamily:"inherit",fontWeight:600},
                 disabled:syncing,
                 onClick:()=>{setSyncing(true);fetch('/api/sync-sheet',{method:'POST'}).then(r=>r.json()).then(()=>load()).catch(e=>console.error('Sync failed:',e)).finally(()=>setSyncing(false))}
-              },syncing?"Syncing...":"Sync from Syft")
+              },syncing?"Syncing...":"Sync from Syft"))
           ),
 
           // ── SUMMARY VIEW ──
