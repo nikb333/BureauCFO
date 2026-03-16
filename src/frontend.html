@@ -81,7 +81,7 @@ function Chart({data,height:H}){
   els.push(h("polyline",{key:"hr",points:ptsH,fill:"none",stroke:C.ok,strokeWidth:1.5,strokeDasharray:"6 3"}));
   // Line 2: Ex. Stock (blue dashed)
   const ptsE=data.map((d,i)=>xp(i)+","+yp(d.exStock)).join(" ");
-  els.push(h("polyline",{key:"e",points:ptsE,fill:"none",stroke:C.blue,strokeWidth:2,strokeDasharray:"6 3"}));
+  els.push(h("polyline",{key:"e",points:ptsE,fill:"none",stroke:C.blue,strokeWidth:0.75,strokeDasharray:"4 4",opacity:0.35}));
   // Line 1: Total Cash Flow (solid steel)
   const ptsW=data.map((d,i)=>xp(i)+","+yp(d.withStock)).join(" ");
   els.push(h("polyline",{key:"w",points:ptsW,fill:"none",stroke:C.steel,strokeWidth:2.5}));
@@ -96,7 +96,7 @@ function Chart({data,height:H}){
   data.forEach((d,i)=>{
     const isH=hover===i;
     els.push(h("circle",{key:"cw"+i,cx:xp(i),cy:yp(d.withStock),r:isH?5:3,fill:C.steel,style:{transition:"r 0.1s"}}));
-    els.push(h("circle",{key:"ce"+i,cx:xp(i),cy:yp(d.exStock),r:isH?4:2.5,fill:C.blue,style:{transition:"r 0.1s"}}));
+    els.push(h("circle",{key:"ce"+i,cx:xp(i),cy:yp(d.exStock),r:isH?2.5:1,fill:C.blue,opacity:isH?0.5:0.25,style:{transition:"r 0.1s"}}));
     els.push(h("circle",{key:"ch"+i,cx:xp(i),cy:yp(d.withHeadroom||d.withStock),r:isH?3.5:2,fill:C.ok,style:{transition:"r 0.1s"}}));
   });
   // Hover vertical line + tooltip
@@ -748,7 +748,7 @@ function App(){
               h("div",null,h("div",{style:{fontSize:14,fontWeight:600}},"13-Week Cash Position (USD)"),
                 h("div",{style:{fontSize:10,color:C.mid,display:"flex",gap:12,marginTop:2}},
                   h("span",null,h("span",{style:{color:C.steel}},"\u2501\u2501")," Total Cash"),
-                  h("span",null,h("span",{style:{color:C.blue}},"\u254C\u254C")," Cash ex. Stock"),
+                  h("span",{style:{opacity:0.4}},h("span",{style:{color:C.blue}},"\u254C\u254C")," Cash ex. Stock"),
                   h("span",null,h("span",{style:{color:C.ok}},"\u254C\u254C")," Cash + Debt Headroom")))),
             h(Chart,{data:waterfall.consolidated,height:240})
           )
