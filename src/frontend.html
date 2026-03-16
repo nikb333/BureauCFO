@@ -669,7 +669,7 @@ function App(){
             ["US","CA","UK","AU"].map(eId=>{
               const e=entMap[eId];if(!e)return null;
               const c=CURR[eId]||CURR.US;
-              const cash=(e.bank_accounts||[]).filter(b=>b.account_type!=='credit').reduce((s,b)=>s+b.balance,0);
+              const cash=(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0);
               const overdueAp=_overdueAP(eId);
               const payroll=_nextPayroll(eId);
               const payAmt=(inputs?.entity_config||[]).find(r=>r.entity_id===eId);
