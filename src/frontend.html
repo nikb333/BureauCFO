@@ -198,9 +198,13 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
   const mode=settings?.ar_collection_mode||'aggregate';
   const fxR={US:1,CA:0.71,UK:1.33,AU:0.68};
   const EIDs=["US","CA","UK","AU"];
-  const startDate=settings?.week_start_date||'2026-03-07';
-  const weekStarts=Array.from({length:11},(_,i)=>{const d=new Date(startDate);d.setDate(d.getDate()+i*7);return d});
-  const weekLabel=(i)=>{const d=weekStarts[i];return d?d.toLocaleDateString('en-GB',{day:'numeric',month:'short'}):''};
+  // Week dates: start from today, align to Monday after first week (mirrors worker.js)
+  const _today=new Date(), _dow=_today.getUTCDay(), _daysToMon=_dow===0?1:(8-_dow);
+  const _firstEnd=new Date(Date.UTC(_today.getUTCFullYear(),_today.getUTCMonth(),_today.getUTCDate()+_daysToMon-1));
+  const _nextMon=new Date(_firstEnd.getTime()+864e5);
+  const weekStarts=[_today,...Array.from({length:10},(_,i)=>new Date(_nextMon.getTime()+i*7*864e5))];
+  const weekEnds=[_firstEnd,...Array.from({length:10},(_,i)=>{const ws=new Date(_nextMon.getTime()+i*7*864e5);return new Date(ws.getTime()+6*864e5)})];
+  const weekLabel=(i)=>{const d=weekEnds[i];return d?d.toLocaleDateString('en-GB',{day:'numeric',month:'short'}):''};
   const [openAccordion,setOpenAccordion]=us(null);
 
   // Payment schedule helper (mirrors worker.js logic)
@@ -958,10 +962,13 @@ function App(){
       tab==="ap"&&(()=>{
         const toUSD=(v,eId)=>Math.round((v||0)*((entMap[eId]||{}).fx_rate||1));
         const EIDs=["US","CA","UK","AU"];
-        const startDate=inputs?.settings?.week_start_date||'2026-03-07';
-        const weekStarts=Array.from({length:11},(_,i)=>{const d=new Date(startDate);d.setDate(d.getDate()+i*7);return d});
-        const weekEnds=weekStarts.map(ws=>{const we=new Date(ws);we.setDate(we.getDate()+6);return we});
-        const weekLabel=i=>{const d=weekStarts[i];return d?d.toLocaleDateString('en-GB',{day:'numeric',month:'short'}):''};
+        // Week dates: start from today, align to Monday after first week (mirrors worker.js)
+        const _t=new Date(),_dw=_t.getUTCDay(),_dm=_dw===0?1:(8-_dw);
+        const _fe=new Date(Date.UTC(_t.getUTCFullYear(),_t.getUTCMonth(),_t.getUTCDate()+_dm-1));
+        const _nm=new Date(_fe.getTime()+864e5);
+        const weekStarts=[_t,...Array.from({length:10},(_,i)=>new Date(_nm.getTime()+i*7*864e5))];
+        const weekEnds=[_fe,...Array.from({length:10},(_,i)=>{const ws=new Date(_nm.getTime()+i*7*864e5);return new Date(ws.getTime()+6*864e5)})];
+        const weekLabel=i=>{const d=weekEnds[i];return d?d.toLocaleDateString('en-GB',{day:'numeric',month:'short'}):''};
         const payDate=d=>d.payment_date_override||d.due_date;
         const assignWeek=(d)=>{
           const dd=payDate(d);
