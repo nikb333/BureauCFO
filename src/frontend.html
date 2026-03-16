@@ -1354,7 +1354,19 @@ function App(){
               h("td",{style:{fontWeight:700,textAlign:"right",fontSize:11}},fmtC(tradeLoans.reduce((s,l)=>s+(l.outstanding||0),0),'AU')),
               h("td",null),
               h("td",{style:{fontWeight:700,color:C.bad,fontSize:11}},fmtC(tradeLoans.reduce((s,l)=>s+Math.round((l.outstanding||0)*(1+(l.rate||0)/2)),0),'AU')),
-              h("td",{colSpan:2}))))
+              h("td",{colSpan:2})))),
+          (()=>{
+            const facility=2500000;
+            const totalOutstanding=tradeLoans.reduce((s,l)=>s+(l.outstanding||0),0);
+            const headroomAUD=facility-totalOutstanding;
+            const auFx=(CURR.AU||{}).fx||0.68;
+            const headroomUSD=Math.round(headroomAUD*auFx);
+            return h("div",{style:{padding:"12px 16px",background:"#F5F9F5",borderTop:"1px solid #E8E7E3",display:"flex",gap:24,alignItems:"center",flexWrap:"wrap"}},
+              h("div",{style:{fontSize:11,color:C.mid,fontWeight:600}},"Trade Finance Facility: "+fmtC(facility,'AU')),
+              h("div",{style:{fontSize:11,color:C.mid}},"Outstanding: "+fmtC(totalOutstanding,'AU')),
+              h("div",{style:{fontSize:13,fontWeight:700,color:headroomAUD>=0?C.ok:C.bad}},"Headroom: "+fmtC(headroomAUD,'AU')),
+              h("div",{style:{fontSize:13,fontWeight:700,color:headroomAUD>=0?C.ok:C.bad}},"("+fmtC(headroomUSD,'US')+" USD)"));
+          })()
         )
       ),
 
