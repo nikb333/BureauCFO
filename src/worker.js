@@ -77,6 +77,57 @@ function dateInWeek(ds, ws, we) {
   return d>=ws && d<=we;
 }
 
+// Payroll date helpers — hardcoded per entity rules
+function getLastDayOfMonth(y,m){return new Date(Date.UTC(y,m+1,0))}
+function bizDaysBefore(date,n){
+  // Walk backwards n business days from date
+  const d=new Date(date);
+  let count=0;
+  while(count<n){d.setUTCDate(d.getUTCDate()-1);const dow=d.getUTCDay();if(dow!==0&&dow!==6)count++}
+  return d;
+}
+function getPayrollDates(eId, startDate, endDate){
+  const dates=[];
+  const sd=new Date(startDate), ed=new Date(endDate);
+  if(eId==='US'||eId==='CA'){
+    // 2 biz days before 15th and last day of month
+    let y=sd.getUTCFullYear(), m=sd.getUTCMonth();
+    for(let i=0;i<6;i++){// 6 months covers 11 weeks
+      const mid=new Date(Date.UTC(y,m,15));
+      const eom=getLastDayOfMonth(y,m);
+      const payMid=bizDaysBefore(mid,2);
+      const payEom=bizDaysBefore(eom,2);
+      if(payMid>=sd&&payMid<=ed) dates.push(payMid);
+      if(payEom>=sd&&payEom<=ed) dates.push(payEom);
+      m++;if(m>11){m=0;y++}
+    }
+  } else if(eId==='UK'){
+    // 25th every month
+    let y=sd.getUTCFullYear(), m=sd.getUTCMonth();
+    for(let i=0;i<6;i++){
+      const pay=new Date(Date.UTC(y,m,25));
+      if(pay>=sd&&pay<=ed) dates.push(pay);
+      m++;if(m>11){m=0;y++}
+    }
+  } else if(eId==='AU'){
+    // Every 2nd Friday, anchored to 13 Mar 2026 (a Friday)
+    const anchor=new Date(Date.UTC(2026,2,13));// 13 Mar 2026
+    // Find first fortnightly Friday on or after startDate
+    const diffMs=sd.getTime()-anchor.getTime();
+    const diffDays=Math.floor(diffMs/864e5);
+    const cycleDays=14;
+    let offset=diffDays%cycleDays;
+    if(offset<0) offset+=cycleDays;
+    let first=new Date(sd.getTime()+(offset===0?0:(cycleDays-offset))*864e5);
+    // Verify it's a Friday (day 5)
+    while(first.getUTCDay()!==5) first=new Date(first.getTime()+864e5);
+    for(let d=new Date(first);d<=ed; d=new Date(d.getTime()+14*864e5)){
+      if(d>=sd) dates.push(new Date(d));
+    }
+  }
+  return dates;
+}
+
 function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const N=11;
   // Always start from today so past payments this week are excluded
@@ -221,11 +272,10 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
       });
     }
 
-    const freq=cfg.payroll_frequency||'bimonthly';
+    // Payroll: check if any payroll date falls in this week
     let payroll=0;
-    if(freq==='bimonthly') payroll=(w%2===1)?(cfg.payroll_amount||0)+(cfg.payroll_tax||0):0;
-    else if(freq==='monthly') payroll=(w>0&&w%4===3)?(cfg.payroll_amount||0)+(cfg.payroll_tax||0):0;
-    else if(freq==='fortnightly') payroll=(w%2===1)?(cfg.payroll_amount||0):0;
+    const payDates=getPayrollDates(eId, wk.start.toISOString().slice(0,10), wk.end.toISOString().slice(0,10));
+    if(payDates.length>0) payroll=payDates.length*((cfg.payroll_amount||0)+(cfg.payroll_tax||0));
 
     const marketing=marketingWeekly;
 
