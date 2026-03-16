@@ -57,8 +57,13 @@ async function loadAllInputs(DB) {
 
 function getWeekDates(startDate, n) {
   const weeks=[], s=new Date(startDate);
-  for(let i=0;i<n;i++){
-    const ws=new Date(s.getTime()+i*7*864e5), we=new Date(ws.getTime()+6*864e5);
+  // Week 1: today → next Sunday. Week 2+: Monday → Sunday.
+  const dow=s.getUTCDay(), daysToMon=dow===0?1:(8-dow); // days until next Monday
+  const firstEnd=new Date(s.getTime()+(daysToMon-1)*864e5); // Sunday end of this week
+  weeks.push({start:s,end:firstEnd,label:`${s.getDate()} ${s.toLocaleDateString('en-GB',{month:'short'})}`});
+  const nextMon=new Date(s.getTime()+daysToMon*864e5);
+  for(let i=1;i<n;i++){
+    const ws=new Date(nextMon.getTime()+(i-1)*7*864e5), we=new Date(ws.getTime()+6*864e5);
     weeks.push({start:ws,end:we,label:`${ws.getDate()} ${ws.toLocaleDateString('en-GB',{month:'short'})}`});
   }
   return weeks;
@@ -71,7 +76,10 @@ function dateInWeek(ds, ws, we) {
 }
 
 function calcEntityWaterfall(eId, inputs, scenOv={}) {
-  const N=11, startDate=inputs.settings.week_start_date||'2026-03-07';
+  const N=11;
+  // Always start from today so past payments this week are excluded
+  const now=new Date();
+  const startDate=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())).toISOString().slice(0,10);
   const weeks=getWeekDates(startDate,N);
   const cfg=inputs.config[eId]||{}, ent=inputs.entities.find(e=>e.id===eId)||{};
   const fxRate=ent.fx_rate||1;
