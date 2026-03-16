@@ -72,10 +72,9 @@ function dateInWeek(ds, ws, we) {
 
 function calcEntityWaterfall(eId, inputs, scenOv={}) {
   const N=11;
-  // Always start from the current Monday (rolling forward)
-  const now=new Date(), dow=now.getUTCDay(), diffMon=dow===0?-6:1-dow;
-  const mon=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()+diffMon));
-  const startDate=mon.toISOString().slice(0,10);
+  // Always start from today so past payments this week are excluded
+  const now=new Date();
+  const startDate=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())).toISOString().slice(0,10);
   const weeks=getWeekDates(startDate,N);
   const cfg=inputs.config[eId]||{}, ent=inputs.entities.find(e=>e.id===eId)||{};
   const fxRate=ent.fx_rate||1;
