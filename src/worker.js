@@ -344,16 +344,30 @@ function calcEntityWaterfall(eId, inputs, scenOv={}) {
   return { entity:eId, currency:ent.currency||'USD', fxRate, openingCash, arTotal, apTotal, weeks:weekData };
 }
 
-function calcConsolidated(results) {
+function calcConsolidated(results, inputs) {
   const N=results[0]?.weeks?.length||11, out=[];
+  // Trade finance headroom: A$2.5M facility
+  const TF_FACILITY=2500000;
+  const auFx=(inputs?.entities?.find(e=>e.id==='AU')||{}).fx_rate||0.68;
+  const tfLoans=inputs?.tradeLoans?.AU||[];
+  const totalTfOutstanding=tfLoans.reduce((s,l)=>s+(l.outstanding||0),0);
+  // Track cumulative trade settlements to compute remaining outstanding per week
+  let cumTfSettled=0;
+
   // Opening point = today's cash position
   let openUSD=0;
   for(const r of results) openUSD+=r.openingCash*r.fxRate;
-  out.push({week:'Today',withStock:Math.round(openUSD),exStock:Math.round(openUSD)});
+  const openHeadroom=(TF_FACILITY-totalTfOutstanding)*auFx;
+  out.push({week:'Today',withStock:Math.round(openUSD),exStock:Math.round(openUSD),withHeadroom:Math.round(openUSD+openHeadroom)});
   for(let w=0;w<N;w++){
     let ws=0,es=0; const label=results[0]?.weeks[w]?.week||`Wk${w+1}`;
     for(const r of results){ const wk=r.weeks[w]; if(!wk)continue; ws+=wk.close*r.fxRate; es+=wk.closeExStock*r.fxRate; }
-    out.push({week:label,withStock:Math.round(ws),exStock:Math.round(es)});
+    // Track AU trade finance settlements this week
+    const auWk=results.find(r=>r.entity==='AU')?.weeks[w];
+    if(auWk) cumTfSettled+=auWk.trade||0;
+    const remainingTf=totalTfOutstanding-cumTfSettled;
+    const headroomUSD=(TF_FACILITY-Math.max(0,remainingTf))*auFx;
+    out.push({week:label,withStock:Math.round(ws),exStock:Math.round(es),withHeadroom:Math.round(ws+headroomUSD)});
   }
   return out;
 }
@@ -948,7 +962,7 @@ export default {
           const ovs={}; (inputs.overrides[sId]||[]).forEach(o=>{ovs[o.parameter]=o.value});
           const entWF={}, entRes=[];
           for(const eId of EIDs){ const r=calcEntityWaterfall(eId,inputs,ovs); entWF[eId]=r; entRes.push(r); }
-          scenResults[sId]={id:sId,name:sc.name,color:sc.color,entities:entWF,consolidated:calcConsolidated(entRes)};
+          scenResults[sId]={id:sId,name:sc.name,color:sc.color,entities:entWF,consolidated:calcConsolidated(entRes,inputs)};
         }
         const primary=scenResults[sIds[0]];
         return json({scenarios:scenResults,entities:primary?.entities||{},consolidated:primary?.consolidated||[]});
