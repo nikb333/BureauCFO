@@ -600,42 +600,135 @@ function App(){
     h("div",{className:"tab-content"},
 
       // ═══ OVERVIEW ═══
-      tab==="overview"&&h("div",null,
-        h("div",{className:"grid-4",style:{marginBottom:16}},
-          [{l:"Cash Position",v:fmtF(Math.round(totalCash)),s:"Consolidated USD",c:C.steel},
-           {l:"Total AR Outstanding",v:fmt(totalAR),s:ar.filter(d=>d.outstanding>0).length+" unpaid deals",c:C.ok},
-           {l:"Total AP",v:fmt(ap.reduce((s,v)=>s+v.amount,0)),s:ap.length+" vendors",c:C.bad},
-           {l:"Lowest Week",v:fmt(lowestWk),s:"With stock payments",c:lowestWk<0?C.bad:C.warn}
-          ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},
-            h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))
-        ),
-        // Chart
-        waterfall?.consolidated&&h("div",{className:"card",style:{padding:16,marginBottom:16}},
-          h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
-            h("div",null,h("div",{style:{fontSize:14,fontWeight:600}},"13-Week Cash Position (USD)"),
-              h("div",{style:{fontSize:10,color:C.mid,display:"flex",gap:12,marginTop:2}},
-                h("span",null,h("span",{style:{color:C.steel}},"\u2501\u2501")," Total Cash"),
-                h("span",null,h("span",{style:{color:C.blue}},"\u254C\u254C")," Cash ex. Stock"),
-                h("span",null,h("span",{style:{color:C.ok}},"\u254C\u254C")," Cash + Debt Headroom")))),
-          h(Chart,{data:waterfall.consolidated,height:240})
-        ),
-        // Entity cards
-        h("div",{className:"grid-4"},
-          ["US","CA","UK","AU"].map(k=>{const e=entMap[k];if(!e)return null;
-            const cash=(e.bank_accounts||[]).filter(b=>b.type!=='credit').reduce((s,b)=>s+b.balance,0);
-            return h("div",{key:k,className:"card entity-card",style:{"--c":C.ent[k],background:C.entBg[k]},onClick:()=>{setETab(k);setTab("entity")}},
-              h("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:8}},
-                h("span",{style:{fontSize:13,fontWeight:700,color:C.ent[k]}},k),
-                h("span",{style:{fontSize:9,color:C.mid}},e.currency)),
-              h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:10}},
-                h("div",null,h("div",{style:{fontSize:8,color:C.mid}},"Cash"),h("div",{style:{fontWeight:600}},fmtF(cash))),
-                h("div",null,h("div",{style:{fontSize:8,color:C.mid}},"AR"),h("div",{style:{fontWeight:600,color:C.ok}},fmt((arByE[k]||{}).t))),
-                h("div",null,h("div",{style:{fontSize:8,color:C.mid}},"Deals"),h("div",{style:{fontWeight:600}},(arByE[k]||{}).c)),
-                h("div",null,h("div",{style:{fontSize:8,color:C.mid}},"Payroll"),h("div",{style:{fontWeight:600}},e.payroll?fmtF(e.payroll.amount):"\u2014"))
-              )
-            )})
-        )
-      ),
+      tab==="overview"&&(()=>{
+        // Payroll date helpers (mirrors worker.js)
+        const _gldom=(y,m)=>new Date(Date.UTC(y,m+1,0));
+        const _bdb=(date,n)=>{const d=new Date(date);let c=0;while(c<n){d.setUTCDate(d.getUTCDate()-1);const dw=d.getUTCDay();if(dw!==0&&dw!==6)c++}return d};
+        const _nextPayroll=(eId)=>{
+          const now=new Date(),end=new Date(now.getTime()+10*864e5),dates=[];
+          if(eId==='US'||eId==='CA'){
+            let y=now.getUTCFullYear(),m=now.getUTCMonth();
+            for(let i=0;i<3;i++){
+              const mid=new Date(Date.UTC(y,m,15)),eom=_gldom(y,m);
+              const payMid=_bdb(mid,2),payEom=_bdb(eom,2);
+              if(payMid>=now&&payMid<=end)dates.push(payMid);
+              if(payEom>=now&&payEom<=end)dates.push(payEom);
+              m++;if(m>11){m=0;y++}}
+          }else if(eId==='UK'){
+            let y=now.getUTCFullYear(),m=now.getUTCMonth();
+            for(let i=0;i<3;i++){const p=new Date(Date.UTC(y,m,25));if(p>=now&&p<=end)dates.push(p);m++;if(m>11){m=0;y++}}
+          }else if(eId==='AU'){
+            const anchor=new Date(Date.UTC(2026,2,13)),diffMs=now.getTime()-anchor.getTime(),diffDays=Math.floor(diffMs/864e5);
+            let offset=diffDays%14;if(offset<0)offset+=14;
+            let first=new Date(now.getTime()+(offset===0?0:(14-offset))*864e5);
+            while(first.getUTCDay()!==5)first=new Date(first.getTime()+864e5);
+            for(let d=new Date(first);d<=end;d=new Date(d.getTime()+14*864e5)){if(d>=now)dates.push(new Date(d))}
+          }
+          if(!dates.length)return null;
+          const next=dates[0];
+          const daysUntil=Math.round((next.getTime()-now.getTime())/864e5);
+          return {date:next,days:daysUntil};
+        };
+        // Overdue AP per entity
+        const _overdueAP=(eId)=>{
+          const today=new Date().toISOString().slice(0,10);
+          return ap.filter(v=>v.entity_id===eId&&v.due_date&&v.due_date<=today).reduce((s,v)=>s+Math.abs(v.amount||0),0);
+        };
+        // Trade finance due ≤14d (AU)
+        const _tfDue14=()=>{
+          const now=new Date(),end=new Date(now.getTime()+14*864e5);
+          const due=tradeLoans.filter(l=>l.maturity_date&&new Date(l.maturity_date+'T00:00:00')>=now&&new Date(l.maturity_date+'T00:00:00')<=end);
+          if(!due.length)return null;
+          const total=due.reduce((s,l)=>s+(l.settlement||Math.round((l.outstanding||0)*(1+(l.rate||0)/2))),0);
+          const nearest=due.sort((a,b)=>a.maturity_date.localeCompare(b.maturity_date))[0];
+          const daysUntil=Math.round((new Date(nearest.maturity_date+'T00:00:00').getTime()-now.getTime())/864e5);
+          return {total,days:daysUntil};
+        };
+        // Entity AR from Syft reconciliation
+        const _entityAR=(eId)=>{
+          const syft=inputs?.syft_reconciliation||(inputs?.settings?null:null);
+          // Try waterfall entity data
+          const wfE=waterfall?.entities?.[eId];
+          return wfE?.arTotal||ar.filter(d=>d.entity_id===eId&&d.outstanding>0).reduce((s,d)=>s+(d.outstanding||0),0);
+        };
+        // Consolidated metrics
+        const tfOutstanding=tradeLoans.reduce((s,l)=>s+(l.outstanding||0),0);
+        const tfFacility=2500000;
+        const auFx=(CURR.AU||{}).fx||0.68;
+        const headroomUSD=Math.round((tfFacility-tfOutstanding)*auFx);
+        const totalARusd=["US","CA","UK","AU"].reduce((s,eId)=>s+Math.round(_entityAR(eId)*((CURR[eId]||{}).fx||1)),0);
+        const entityNames={US:'Inbox US',CA:'Inbox CA',UK:'Bureau UK',AU:'Urban Rooms AU'};
+        const tblS={width:"100%",borderCollapse:"collapse",fontSize:11};
+        const tdL={padding:"3px 8px",color:C.mid,fontWeight:500};
+        const tdR={padding:"3px 8px",textAlign:"right",fontWeight:600};
+        const tdN={padding:"3px 8px",textAlign:"right",fontSize:10,color:C.mid};
+
+        return h("div",null,
+          // Entity snapshot cards — 2×2 grid
+          h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}},
+            ["US","CA","UK","AU"].map(eId=>{
+              const e=entMap[eId];if(!e)return null;
+              const c=CURR[eId]||CURR.US;
+              const cash=(e.bank_accounts||[]).filter(b=>b.account_type!=='credit').reduce((s,b)=>s+b.balance,0);
+              const overdueAp=_overdueAP(eId);
+              const payroll=_nextPayroll(eId);
+              const payAmt=(inputs?.entity_config||[]).find(r=>r.entity_id===eId);
+              const payrollAmt=payAmt?((payAmt.payroll_amount||0)+(payAmt.payroll_tax||0)):0;
+              const entityAr=_entityAR(eId);
+              const tfDue=eId==='AU'?_tfDue14():null;
+              return h("div",{key:eId,className:"card",style:{padding:0,overflow:"hidden",cursor:"pointer",border:"1px solid #E0DFDB"},onClick:()=>{setETab(eId);setTab("entity")}},
+                h("div",{style:{background:C.steel,color:"#fff",padding:"6px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
+                  h("span",{style:{fontWeight:700,fontSize:12}},eId+"  "+entityNames[eId]),
+                  h("span",{style:{fontSize:10,opacity:0.6}},"\u2192")),
+                h("div",{style:{padding:"2px 4px",fontSize:9,color:C.mid,background:"#F5F4F0",borderBottom:"1px solid #E8E7E3"}},"in "+c.c),
+                h("table",{style:tblS},h("tbody",null,
+                  h("tr",null,h("td",{style:tdL},"Current cash"),h("td",{style:tdR},fmtC(cash,eId))),
+                  h("tr",null,h("td",{style:{...tdL,color:C.bad}},"Overdue AP"),h("td",{style:{...tdR,color:overdueAp?C.bad:C.mid}},overdueAp?fmtC(overdueAp,eId):"\u2014")),
+                  h("tr",null,
+                    h("td",{style:tdL},"Payroll due \u226410d"),
+                    h("td",{style:{...tdR,color:payroll?C.bad:C.mid}},payroll?fmtC(payrollAmt,eId):"\u2014"),
+                    h("td",{style:tdN},payroll?"due in "+payroll.days+" days":"none due")),
+                  eId==='AU'?h("tr",null,
+                    h("td",{style:tdL},"Trade fin due \u226414d"),
+                    h("td",{style:{...tdR,color:tfDue?C.ok:C.mid}},tfDue?fmtC(tfDue.total,eId):"\u2014"),
+                    h("td",{style:tdN},tfDue?"due in "+tfDue.days+" days":"none due"))
+                  :h("tr",null,h("td",{style:{...tdL,fontStyle:"italic"}},"Total AR (snapshot)"),h("td",{style:tdR},fmtC(entityAr,eId)))
+                )))})
+          ),
+          // Group consolidated metrics
+          h("div",{className:"card",style:{padding:0,overflow:"hidden",marginBottom:16,border:"1px solid "+C.steel}},
+            h("div",{style:{background:C.steel,color:"#fff",padding:"8px 12px",display:"flex",alignItems:"center",gap:8}},
+              h("span",{style:{fontSize:14}},"\uD83C\uDF10"),
+              h("span",{style:{fontWeight:700,fontSize:13}},"Group Consolidated Metrics"),
+              h("span",{style:{fontSize:11,opacity:0.6}},"\u2014 All in USD")),
+            h("div",{style:{padding:"2px 12px",fontSize:9,color:C.mid,background:"#F5F4F0",fontStyle:"italic",borderBottom:"1px solid #E8E7E3"}},
+              "Consolidated snapshot \u00b7 US \u00b7 CA \u00b7 UK \u00b7 AU \u00b7 all figures converted to USD"),
+            h("table",{style:{...tblS,fontSize:12}},h("tbody",null,
+              h("tr",null,
+                h("td",{style:{...tdL,fontWeight:600}},"Cash \u2013 Net of critical payments"),
+                h("td",{style:{...tdR,fontSize:13}},fmt(Math.round(totalCash))),
+                h("td",{style:{...tdN,fontStyle:"italic"}},"Net cash in USD")),
+              h("tr",null,
+                h("td",{style:{...tdL,fontWeight:600}},"Total Stock Funding Headroom (USD)"),
+                h("td",{style:{...tdR,fontSize:13,color:headroomUSD>=0?C.ok:C.bad}},fmt(headroomUSD)),
+                h("td",{style:{...tdN,fontStyle:"italic"}},"A$2.5M facility / USD headroom")),
+              h("tr",null,
+                h("td",{style:{...tdL,fontWeight:600}},"Total accounts receivable (USD)"),
+                h("td",{style:{...tdR,fontSize:13,color:C.ok,border:"1px solid "+C.ok,background:"#E2F5EC"}},fmt(totalARusd)),
+                h("td",{style:{...tdN,fontStyle:"italic"}},"US AR + CA AR\u00d70.71 + UK AR\u00d71.33 + AU AR\u00d70.68"))
+            ))
+          ),
+          // Chart
+          waterfall?.consolidated&&h("div",{className:"card",style:{padding:16,marginBottom:16}},
+            h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+              h("div",null,h("div",{style:{fontSize:14,fontWeight:600}},"13-Week Cash Position (USD)"),
+                h("div",{style:{fontSize:10,color:C.mid,display:"flex",gap:12,marginTop:2}},
+                  h("span",null,h("span",{style:{color:C.steel}},"\u2501\u2501")," Total Cash"),
+                  h("span",null,h("span",{style:{color:C.blue}},"\u254C\u254C")," Cash ex. Stock"),
+                  h("span",null,h("span",{style:{color:C.ok}},"\u254C\u254C")," Cash + Debt Headroom")))),
+            h(Chart,{data:waterfall.consolidated,height:240})
+          )
+        )})(),
 
       // ═══ AR CHASING ═══
       tab==="ar"&&(()=>{
