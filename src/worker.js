@@ -1242,35 +1242,70 @@ export default {
       // ── AR v2: deal-centric AR from HubSpot + Syft reconciliation ──
       if (path === '/api/ar-v2' && method === 'GET') {
         const entity = url.searchParams.get('entity');
+
         let dealsQ = 'SELECT * FROM hs_ar_deals';
         if (entity && entity !== 'ALL') dealsQ += ` WHERE entity_id='${entity}'`;
         dealsQ += ' ORDER BY invoiced_total DESC';
+
+        let invoicesQ = "SELECT * FROM hs_invoices WHERE hs_status = 'open'";
+        if (entity && entity !== 'ALL') invoicesQ += ` AND entity_id='${entity}'`;
+        invoicesQ += ' ORDER BY hs_amount_billed DESC';
+
         let syftQ = 'SELECT * FROM syft_ar_customers';
         if (entity && entity !== 'ALL') syftQ += ` WHERE entity_id='${entity}'`;
         syftQ += ' ORDER BY total_due DESC';
 
-        const [dealsRes, syftRes, syncRes, syftSyncRes] = await Promise.all([
+        const [dealsRes, invoicesRes, syftRes, syncRes, syftSyncRes] = await Promise.all([
           env.DB.prepare(dealsQ).all(),
+          env.DB.prepare(invoicesQ).all(),
           env.DB.prepare(syftQ).all(),
           env.DB.prepare("SELECT value FROM settings WHERE key='hubspot_ar_last_sync'").first(),
           env.DB.prepare("SELECT value FROM settings WHERE key='syft_customers_last_sync'").first(),
         ]);
+
         const deals = dealsRes.results;
+        const allInvoices = invoicesRes.results;
         const syftCustomers = syftRes.results;
 
-        // Build invoice-by-deal lookup
-        const dealIds = deals.map(d => d.deal_id);
-        let invoicesByDeal = {};
-        if (dealIds.length > 0) {
-          const placeholders = dealIds.map(() => '?').join(',');
-          const invRes = await env.DB.prepare(`SELECT * FROM hs_invoices WHERE deal_id IN (${placeholders})`).bind(...dealIds).all();
-          for (const inv of invRes.results) {
-            if (!invoicesByDeal[inv.deal_id]) invoicesByDeal[inv.deal_id] = [];
-            invoicesByDeal[inv.deal_id].push(inv);
+        // ── Invoice-number exact matching ──
+        // Build lookup: invoice_number → deal from deals.invoice_numbers (comma-separated)
+        const invNumToDeal = {};
+        for (const deal of deals) {
+          if (!deal.invoice_numbers) continue;
+          const nums = deal.invoice_numbers.split(',').map(n => n.trim()).filter(Boolean);
+          for (const num of nums) {
+            invNumToDeal[num] = deal;
           }
         }
 
-        // ── Fuzzy name matching ──
+        // Categorise each open invoice
+        const invoicesLinkedToDeal = [];   // invoice number appears in a deal's invoice_numbers
+        const invoicesLinkedNoMatch = [];  // has a deal_id but deal not in our open deals list
+        const invoicesUnlinked = [];       // no deal association at all
+
+        for (const inv of allInvoices) {
+          const matchedDeal = invNumToDeal[inv.hs_number?.trim()];
+          if (matchedDeal) {
+            invoicesLinkedToDeal.push({ invoice: inv, deal: matchedDeal });
+          } else if (inv.deal_id) {
+            invoicesLinkedNoMatch.push(inv);
+          } else {
+            invoicesUnlinked.push(inv);
+          }
+        }
+
+        // Invoice → deal map for the ageing tab
+        const invoicesByDeal = {};
+        for (const { invoice, deal } of invoicesLinkedToDeal) {
+          if (!invoicesByDeal[deal.deal_id]) invoicesByDeal[deal.deal_id] = [];
+          invoicesByDeal[deal.deal_id].push(invoice);
+        }
+
+        // Deals with NO open invoice in hs_invoices
+        const dealIdsWithInvoice = new Set(invoicesLinkedToDeal.map(i => i.deal.deal_id));
+        const dealsWithoutInvoice = deals.filter(d => !dealIdsWithInvoice.has(d.deal_id));
+
+        // ── Syft fuzzy name matching (for Syft reconciliation panel) ──
         const STRIP_WORDS = new Set(['ltd','pty','inc','the','limited','llc','plc','group','corp','corporation','co','and','of','for','a','an','services','solutions','company','holdings','enterprises','consulting','international','australia','canada','uk','usa','us']);
         function normTokens(name) {
           return (name || '')
@@ -1324,6 +1359,12 @@ export default {
         return json({
           deals,
           invoicesByDeal,
+          // Invoice-level reconciliation (new)
+          invoicesLinkedToDeal,
+          invoicesLinkedNoMatch,
+          invoicesUnlinked,
+          dealsWithoutInvoice,
+          // Syft reconciliation (existing)
           syftCustomers,
           matched,
           syftOnly,
