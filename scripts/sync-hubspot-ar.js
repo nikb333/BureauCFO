@@ -47,6 +47,7 @@ async function main() {
     'dealname', 'hubspot_owner_id', 'closedate', 'amount', 'deal_currency_code',
     'payment_terms', 'payment_terms_if_different_than_standard_payment_terms',
     'booths_installed_date', 'scheduled_installation_date__dean_input_',
+    'current_promised_date__from_tickets_',
     'is_invoicenumbers', 'is_invoice_status', 'is_invoice_total',
     'is_paidtotal', 'is_invoice_total_inc_tax', 'hs_is_closed_won',
   ];
@@ -151,7 +152,7 @@ async function main() {
     }
   }
 
-  // Fetch ticket details
+  // Fetch ticket details (with pipeline info for ops vs defect classification)
   const allTicketIds = [...new Set(Object.values(ticketMap).flat())];
   const ticketDetails = {};
   for (let i = 0; i < allTicketIds.length; i += 100) {
@@ -159,12 +160,14 @@ async function main() {
     try {
       const tResp = await hsPost('/crm/v3/objects/tickets/batch/read', {
         inputs: batch.map(id => ({ id })),
-        properties: ['subject', 'hs_pipeline_stage', 'primary_issue_category', 'deficiency_category'],
+        properties: ['subject', 'hs_pipeline', 'hs_pipeline_stage', 'hs_lastmodifieddate', 'primary_issue_category', 'deficiency_category'],
       });
       for (const t of tResp.results || []) {
         ticketDetails[String(t.id)] = {
           subject: (t.properties.subject || '').replace(/'/g, "''"),
-          status: t.properties.hs_pipeline_stage || '',
+          pipeline: t.properties.hs_pipeline || '',
+          stage: t.properties.hs_pipeline_stage || '',
+          lastModified: t.properties.hs_lastmodifieddate || '',
           category: (t.properties.primary_issue_category || t.properties.deficiency_category || '').replace(/'/g, "''"),
         };
       }
@@ -172,6 +175,37 @@ async function main() {
       console.warn('Ticket detail fetch failed:', e.message);
     }
   }
+
+  // ── Pipeline and stage classification constants ──
+  const OPS_PIPELINE = '749963562'; // Global Operations
+  const OPS_STAGE_MAP = {
+    '1105295898': 'New',
+    '1105295899': 'Pending Sales Order',
+    '1091283321': 'Pending Sales Order',
+    '1091283320': 'Pending Sales Order',
+    '1091283322': 'On Hold',
+    '1091257712': 'Install Prep',
+    '1091257713': 'Install Scheduled',
+    '1091257714': 'Install Complete',
+    '1096055447': 'Rectifications',
+    '1108724088': 'Fully Complete',
+    '1117806879': 'Cancelled',
+  };
+  const DEFECT_PIPELINES = new Set([
+    '686268567',  // Canada + USA Rectifications
+    '689864371',  // AUS Rectifications
+    '689864372',  // UK Rectifications
+    '768255583',  // Global Rectifications
+    '875798280',  // Global Quality
+  ]);
+  const DEFECT_OPEN_STAGES = new Set([
+    '1123458862', // Rectification Open
+    '1123458863', // In Progress
+    '1123458864', // Waiting for Parts
+    '1123638120', // Waiting for Supplier Resolution
+    '1123638122', // Scheduled
+    '1314059152', // Waiting for Customer
+  ]);
 
   // ── 6. Fetch owner names ──
   const ownerMap = {};
@@ -208,7 +242,8 @@ async function main() {
     const ownerName = ownerMap[ownerId] || ownerId;
     const currency = (dp.deal_currency_code || 'USD').toUpperCase();
     const entityId = CURRENCY_ENTITY[currency] || 'US';
-    const installDate = dp.booths_installed_date || dp['scheduled_installation_date__dean_input_'] || null;
+    // install_date priority: current_promised_date (from ops ticket) > booths_installed_date > fallback
+    const installDate = dp['current_promised_date__from_tickets_'] || dp.booths_installed_date || dp['scheduled_installation_date__dean_input_'] || null;
 
     // Invoice Stack fields
     const invoiceNumbers = dp.is_invoicenumbers || '';
@@ -242,12 +277,52 @@ async function main() {
     // Skip deals with no invoice numbers (not yet invoiced)
     if (!invoiceNumbers.trim()) continue;
 
+    // ── Classify tickets: ops (install_status) vs defect (has_open_ticket) ──
     const dealTicketIds = ticketMap[dealId] || [];
-    const hasTicket = dealTicketIds.length > 0 ? 1 : 0;
-    const firstTicket = dealTicketIds.length > 0 ? ticketDetails[dealTicketIds[0]] : null;
+    let installStatus = 'Not Scheduled';
+    let hasOpenTicket = 0;
+    let defectSubject = null;
+    let defectCategory = null;
+
+    // Find primary ops ticket (most recently modified in Global Operations pipeline)
+    let opsTickets = [];
+    let defectTickets = [];
+    for (const tId of dealTicketIds) {
+      const t = ticketDetails[tId];
+      if (!t) continue;
+      if (t.pipeline === OPS_PIPELINE) {
+        opsTickets.push(t);
+      } else if (DEFECT_PIPELINES.has(t.pipeline) || DEFECT_OPEN_STAGES.has(t.stage)) {
+        defectTickets.push(t);
+      }
+    }
+
+    // Install status from ops ticket (most recently modified)
+    if (opsTickets.length > 0) {
+      opsTickets.sort((a, b) => (b.lastModified || '').localeCompare(a.lastModified || ''));
+      const primaryOps = opsTickets[0];
+      installStatus = OPS_STAGE_MAP[primaryOps.stage] || 'Not Scheduled';
+    }
+
+    // Defect ticket (open ones only)
+    const openDefects = defectTickets.filter(t => DEFECT_OPEN_STAGES.has(t.stage));
+    if (openDefects.length > 0) {
+      openDefects.sort((a, b) => (b.lastModified || '').localeCompare(a.lastModified || ''));
+      hasOpenTicket = 1;
+      defectSubject = openDefects[0].subject;
+      // Parse category from subject (often after last colon)
+      const subj = openDefects[0].subject || '';
+      const colonIdx = subj.lastIndexOf(':');
+      defectCategory = openDefects[0].category || (colonIdx > 0 ? subj.slice(colonIdx + 1).trim() : null);
+    }
+
+    // has_draft_only: all invoice numbers start with INV- (auto-generated drafts)
+    const invNums = invoiceNumbers.split(',').map(n => n.trim()).filter(Boolean);
+    const hasDraftOnly = invNums.length > 0 && invNums.every(n => n.startsWith('INV-')) ? 1 : 0;
+
     const dealUrl = `https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-3/${dealId}`;
 
-    sql += `INSERT OR REPLACE INTO hs_ar_deals (deal_id,deal_name,owner_id,owner_name,entity_id,currency,close_date,payment_terms,payment_terms_other,install_date,deal_amount,invoiced_total,invoice_numbers,invoice_status,paid_total,outstanding_total,invoiced_total_inc_tax,outstanding_total_inc_tax,is_closed_won,has_open_ticket,ticket_subject,ticket_status,ticket_category,hubspot_deal_url,invoice_coverage_flag) VALUES (${esc(dealId)},${esc((dp.dealname || '').replace(/'/g, "''"))},${esc(ownerId)},${esc(ownerName)},${esc(entityId)},${esc(currency)},${esc(dp.closedate?.slice(0, 10))},${esc(dp.payment_terms || '')},${esc(dp['payment_terms_if_different_than_standard_payment_terms'] || '')},${esc(installDate?.slice(0, 10))},${escNum(dp.amount)},${escNum(invoicedTotal)},${esc(invoiceNumbers.replace(/'/g, "''"))},${esc(invoiceStatus)},${escNum(paidTotal)},${escNum(outstandingTotal)},${escNum(invoicedTotalIncTax)},${escNum(outstandingTotalIncTax)},${isClosedWon},${hasTicket},${esc(firstTicket?.subject)},${esc(firstTicket?.status)},${esc(firstTicket?.category)},${esc(dealUrl)},${esc(invoiceCoverageFlag)});\n`;
+    sql += `INSERT OR REPLACE INTO hs_ar_deals (deal_id,deal_name,owner_id,owner_name,entity_id,currency,close_date,payment_terms,payment_terms_other,install_date,install_status,deal_amount,invoiced_total,invoice_numbers,invoice_status,paid_total,outstanding_total,invoiced_total_inc_tax,outstanding_total_inc_tax,is_closed_won,has_open_ticket,ticket_subject,ticket_status,ticket_category,hubspot_deal_url,invoice_coverage_flag,has_draft_only) VALUES (${esc(dealId)},${esc((dp.dealname || '').replace(/'/g, "''"))},${esc(ownerId)},${esc(ownerName)},${esc(entityId)},${esc(currency)},${esc(dp.closedate?.slice(0, 10))},${esc(dp.payment_terms || '')},${esc(dp['payment_terms_if_different_than_standard_payment_terms'] || '')},${esc(installDate?.slice(0, 10))},${esc(installStatus)},${escNum(dp.amount)},${escNum(invoicedTotal)},${esc(invoiceNumbers.replace(/'/g, "''"))},${esc(invoiceStatus)},${escNum(paidTotal)},${escNum(outstandingTotal)},${escNum(invoicedTotalIncTax)},${escNum(outstandingTotalIncTax)},${isClosedWon},${hasOpenTicket},${esc(defectSubject)},${hasOpenTicket ? esc('open') : 'NULL'},${esc(defectCategory)},${esc(dealUrl)},${esc(invoiceCoverageFlag)},${hasDraftOnly});\n`;
     dealCount++;
   }
 
@@ -268,11 +343,14 @@ async function main() {
       // No invoice at all
       sql += `INSERT OR REPLACE INTO hs_deals_uninvoiced (deal_id,deal_name,owner_name,entity_id,currency,deal_amount,close_date,reason,draft_invoice_numbers,hubspot_deal_url) VALUES (${esc(dealId)},${esc((dp.dealname || '').replace(/'/g, "''"))},${esc(ownerName)},${esc(entityId)},${esc(currency)},${escNum(dp.amount)},${esc(dp.closedate?.slice(0, 10))},${esc('no_invoice')},NULL,${esc(dealUrl)});\n`;
       uninvoicedCount++;
+    } else {
+      // Draft-only detection: all invoice numbers start with INV- (auto-generated drafts)
+      const invNums = invoiceNumbers.split(',').map(n => n.trim()).filter(Boolean);
+      if (invNums.length > 0 && invNums.every(n => n.startsWith('INV-'))) {
+        sql += `INSERT OR REPLACE INTO hs_deals_uninvoiced (deal_id,deal_name,owner_name,entity_id,currency,deal_amount,close_date,reason,draft_invoice_numbers,hubspot_deal_url) VALUES (${esc(dealId)},${esc((dp.dealname || '').replace(/'/g, "''"))},${esc(ownerName)},${esc(entityId)},${esc(currency)},${escNum(dp.amount)},${esc(dp.closedate?.slice(0, 10))},${esc('draft_only')},${esc(invoiceNumbers)},${esc(dealUrl)});\n`;
+        uninvoicedCount++;
+      }
     }
-    // Note: draft-only detection requires checking individual invoice object statuses.
-    // For now, has_draft_only is set manually in D1 for known cases (e.g. YuJa).
-    // Deals flagged has_draft_only=1 in hs_ar_deals are also added here by the
-    // manual SQL patch process documented in the spec.
   }
 
   // Update owner cache
