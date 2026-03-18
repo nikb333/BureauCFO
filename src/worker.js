@@ -1214,6 +1214,47 @@ export default {
         return new Response(html,{headers:{'Content-Type':'text/html'}});
       }
 
+      // ── AR v2: deal-centric AR from HubSpot ──
+      // ── AR v2: deal-centric AR from HubSpot (data synced via local script) ──
+      if (path === '/api/ar-v2' && method === 'GET') {
+        const entity = url.searchParams.get('entity');
+        let dealsQ = 'SELECT * FROM hs_ar_deals';
+        if (entity && entity !== 'ALL') dealsQ += ` WHERE entity_id=?`;
+        dealsQ += ' ORDER BY invoiced_total DESC';
+
+        let invoicesQ = 'SELECT * FROM hs_invoices WHERE deal_id IS NULL';
+        if (entity && entity !== 'ALL') invoicesQ += ` AND entity_id=?`;
+        invoicesQ += ' ORDER BY hs_amount_billed DESC';
+
+        const dealsStmt = entity && entity !== 'ALL' ? env.DB.prepare(dealsQ).bind(entity) : env.DB.prepare(dealsQ);
+        const invStmt = entity && entity !== 'ALL' ? env.DB.prepare(invoicesQ).bind(entity) : env.DB.prepare(invoicesQ);
+
+        const [dealsRes, unlinkedRes, syncRes] = await Promise.all([
+          dealsStmt.all(),
+          invStmt.all(),
+          env.DB.prepare("SELECT value FROM settings WHERE key='hubspot_ar_last_sync'").first(),
+        ]);
+
+        // Build invoice detail map for each deal
+        const dealIdsArr = dealsRes.results.map(d => d.deal_id);
+        let invoicesByDeal = {};
+        if (dealIdsArr.length > 0) {
+          const placeholders = dealIdsArr.map(() => '?').join(',');
+          const invRes = await env.DB.prepare(`SELECT * FROM hs_invoices WHERE deal_id IN (${placeholders})`).bind(...dealIdsArr).all();
+          for (const inv of invRes.results) {
+            if (!invoicesByDeal[inv.deal_id]) invoicesByDeal[inv.deal_id] = [];
+            invoicesByDeal[inv.deal_id].push(inv);
+          }
+        }
+
+        return json({
+          deals: dealsRes.results,
+          invoicesByDeal,
+          unlinked: unlinkedRes.results,
+          last_sync: syncRes?.value || null,
+        });
+      }
+
       return json({error:`Not found: ${path}`},404);
     } catch(e){ console.error('Worker error:',e); return json({error:e.message},500); }
   },
