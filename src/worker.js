@@ -1243,7 +1243,7 @@ export default {
       if (path === '/api/ar-v2' && method === 'GET') {
         const entity = url.searchParams.get('entity');
 
-        let dealsQ = 'SELECT * FROM hs_ar_deals WHERE (is_closed_won IS NULL OR is_closed_won = 1)';
+        let dealsQ = 'SELECT * FROM hs_ar_deals WHERE (is_closed_won IS NULL OR is_closed_won = 1) AND (has_draft_only IS NULL OR has_draft_only = 0)';
         if (entity && entity !== 'ALL') dealsQ += ` AND entity_id='${entity}'`;
         dealsQ += ' ORDER BY invoiced_total DESC';
 
@@ -1255,13 +1255,14 @@ export default {
         if (entity && entity !== 'ALL') syftQ += ` WHERE entity_id='${entity}'`;
         syftQ += ' ORDER BY total_due DESC';
 
-        const [dealsRes, invoicesRes, syftRes, syftReconRes, syncRes, syftSyncRes] = await Promise.all([
+        const [dealsRes, invoicesRes, syftRes, syftReconRes, syncRes, syftSyncRes, uninvoicedRes] = await Promise.all([
           env.DB.prepare(dealsQ).all(),
           env.DB.prepare(invoicesQ).all(),
           env.DB.prepare(syftQ).all(),
           env.DB.prepare('SELECT * FROM syft_reconciliation').all(),
           env.DB.prepare("SELECT value FROM settings WHERE key='hubspot_ar_last_sync'").first(),
           env.DB.prepare("SELECT value FROM settings WHERE key='syft_customers_last_sync'").first(),
+          env.DB.prepare('SELECT * FROM hs_deals_uninvoiced ORDER BY deal_amount DESC').all(),
         ]);
 
         const deals = dealsRes.results;
@@ -1400,6 +1401,8 @@ export default {
         }
         const hubspotOnly = deals.filter(d => !dealMatched.has(d.deal_id));
 
+        const uninvoicedDeals = uninvoicedRes.results || [];
+
         return json({
           deals,
           invoicesByDeal,
@@ -1409,6 +1412,7 @@ export default {
           invoicesLinkedNoMatch,
           invoicesUnlinked,
           dealsWithoutInvoice,
+          uninvoicedDeals,
           syftCustomers,
           matched,
           syftOnly,

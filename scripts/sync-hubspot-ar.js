@@ -232,6 +232,30 @@ async function main() {
     dealCount++;
   }
 
+  // ── 8. Populate hs_deals_uninvoiced (no invoice or draft-only) ──
+  sql += 'DELETE FROM hs_deals_uninvoiced;\n';
+  let uninvoicedCount = 0;
+  for (const deal of allDeals) {
+    const dp = deal.properties;
+    const dealId = String(deal.id);
+    const invoiceNumbers = dp.is_invoicenumbers || '';
+    const ownerId = dp.hubspot_owner_id || '';
+    const ownerName = ownerMap[ownerId] || ownerId;
+    const currency = (dp.deal_currency_code || 'USD').toUpperCase();
+    const entityId = CURRENCY_ENTITY[currency] || 'US';
+    const dealUrl = `https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-3/${dealId}`;
+
+    if (!invoiceNumbers.trim()) {
+      // No invoice at all
+      sql += `INSERT OR REPLACE INTO hs_deals_uninvoiced (deal_id,deal_name,owner_name,entity_id,currency,deal_amount,close_date,reason,draft_invoice_numbers,hubspot_deal_url) VALUES (${esc(dealId)},${esc((dp.dealname || '').replace(/'/g, "''"))},${esc(ownerName)},${esc(entityId)},${esc(currency)},${escNum(dp.amount)},${esc(dp.closedate?.slice(0, 10))},${esc('no_invoice')},NULL,${esc(dealUrl)});\n`;
+      uninvoicedCount++;
+    }
+    // Note: draft-only detection requires checking individual invoice object statuses.
+    // For now, has_draft_only is set manually in D1 for known cases (e.g. YuJa).
+    // Deals flagged has_draft_only=1 in hs_ar_deals are also added here by the
+    // manual SQL patch process documented in the spec.
+  }
+
   // Update owner cache
   for (const [id, name] of Object.entries(ownerMap)) {
     sql += `INSERT OR REPLACE INTO hs_owners (owner_id, name) VALUES (${esc(id)}, ${esc(name)});\n`;
@@ -240,13 +264,13 @@ async function main() {
   sql += `INSERT OR REPLACE INTO settings (key,value) VALUES ('hubspot_ar_last_sync', datetime('now'));\n`;
   sql += 'COMMIT;\n';
 
-  console.log(`Writing ${openInvoices.length} invoices and ${dealCount} deal rows to D1...`);
+  console.log(`Writing ${openInvoices.length} invoices, ${dealCount} deal rows, ${uninvoicedCount} uninvoiced deals to D1...`);
   d1Execute(sql);
 
   const linked = openInvoices.filter(r => r.deal_id).length;
   const unlinked = openInvoices.filter(r => !r.deal_id).length;
   console.log(`Done. Invoices: ${linked} linked, ${unlinked} unlinked`);
-  console.log(`Deals: ${dealCount} Closed Won with invoices (of ${allDeals.length} total Closed Won)`);
+  console.log(`Deals: ${dealCount} Closed Won with invoices, ${uninvoicedCount} uninvoiced (of ${allDeals.length} total Closed Won)`);
 }
 
 main().catch(e => { console.error('Sync failed:', e); process.exit(1); });
