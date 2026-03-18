@@ -235,7 +235,8 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
   const paySchedule=(d)=>{
     const t=d.payment_terms||'',prom=d.promised_date,inst=d.install_date;
     if(t.includes('50/50')){
-      if(d.invoice_status==='first_invoice_paid') return [{pct:100,date:inst?addDays(inst,PAY_DELAY):null,label:'Release (deposit paid)'}];
+      var depositPaid=d.invoice_status==='first_invoice_paid'||(d.paid_total||0)>0;
+      if(depositPaid) return [{pct:100,date:inst?addDays(inst,PAY_DELAY):null,label:'Release (deposit paid)'}];
       return [{pct:50,date:prom?addDays(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDays(inst,PAY_DELAY):null,label:'50% install'}];
     }
     if(t.includes('Due on Confirmation')) return [{pct:100,date:prom?addDays(prom,PAY_DELAY):null,label:'Due on confirmation'}];
@@ -551,20 +552,21 @@ function computeTranches(deal) {
   var toStr = function(d) { return d ? d.toISOString().slice(0, 10) : null; };
 
   if (t.includes('50') || to.includes('50')) {
-    if (status === 'first_invoice_paid') {
+    var paidTotal = deal.paid_total || 0;
+    var depositPaid = status === 'first_invoice_paid' || paidTotal > 0;
+    if (depositPaid) {
+      // Deposit collected (either first invoice paid, or partial payment on single invoice).
+      // outstanding_total_inc_tax is already net — show as single release tranche.
       return [{ label: 'Release (deposit paid \u2713)', pct: 100, amount: amt,
         dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false }];
     }
-    if (status === 'invoices_synced') {
-      return [
-        { label: 'Deposit (50%)', pct: 50, amount: amt * 0.5,
-          dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false },
-        { label: 'Release (50%)', pct: 50, amount: amt * 0.5,
-          dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false },
-      ];
-    }
-    return [{ label: 'Balance due', pct: 100, amount: amt,
-      dueDate: toStr(install ? addD(install, 10) : addD(close, 10)), pendingInstall: false, isPaid: false }];
+    // Nothing paid yet — show full 50/50 split
+    return [
+      { label: 'Deposit (50%)', pct: 50, amount: amt * 0.5,
+        dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false },
+      { label: 'Release (50%)', pct: 50, amount: amt * 0.5,
+        dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false },
+    ];
   }
 
   if (t.includes('due on conf') || t.includes('confirmation') || to.includes('due on conf') || to.includes('confirmation')) {
