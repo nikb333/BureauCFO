@@ -796,6 +796,12 @@ function ARv2Tab({ arData }) {
       var dB = b.days === null ? -99999 : b.days;
       return m * (dB - dA);
     }
+    if (sortBy === 'Promised Date') {
+      return m * ((a.deal.promised_date || FAR_FUTURE).localeCompare(b.deal.promised_date || FAR_FUTURE));
+    }
+    if (sortBy === 'Status') {
+      return m * ((a.deal.install_status || '').localeCompare(b.deal.install_status || ''));
+    }
     if (sortBy === 'Owner') return m * ((a.owner || '').localeCompare(b.owner || ''));
     if (sortBy === 'Entity') return m * ((a.deal.entity_id || '').localeCompare(b.deal.entity_id || ''));
     if (sortBy === 'Tranche') return m * ((a.tranche.label || '').localeCompare(b.tranche.label || ''));
@@ -856,7 +862,7 @@ function ARv2Tab({ arData }) {
 
   var showEntityCol = entityFilter === 'ALL';
   var showOwnerCol = !groupByOwner;
-  var colCount = 9 + (showEntityCol ? 1 : 0) + (showOwnerCol ? 1 : 0);
+  var colCount = 11 + (showEntityCol ? 1 : 0) + (showOwnerCol ? 1 : 0);
 
   return h('div', null,
     // ── Top-level tabs: AR Chasing / Reconciliation ──
@@ -991,9 +997,9 @@ function ARv2Tab({ arData }) {
         h('div', { style: { overflowX: 'auto' } },
           h('table', null,
             h('thead', null, h('tr', null,
-              [showOwnerCol && 'Owner', 'Deal', showEntityCol && 'Entity', 'Invoice(s)', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Install Date', 'Terms', ''].filter(Boolean).map(function(col) {
-                var sortKey = col === 'Deal' ? 'Deal Name' : col === 'Next Due' ? 'Due Date' : col;
-                var isSortable = ['Owner', 'Deal', 'Entity', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Install Date', 'Terms'].indexOf(col) >= 0;
+              [showOwnerCol && 'Owner', 'Deal', showEntityCol && 'Entity', 'Invoice(s)', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Promised Date', 'Install Date', 'Status', 'Terms', ''].filter(Boolean).map(function(col) {
+                var sortKey = col === 'Deal' ? 'Deal Name' : col === 'Next Due' ? 'Due Date' : col === 'Promised Date' ? 'Promised Date' : col;
+                var isSortable = ['Owner', 'Deal', 'Entity', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Promised Date', 'Install Date', 'Status', 'Terms'].indexOf(col) >= 0;
                 var isActive = sortBy === sortKey || sortBy === col;
                 var arrow = isActive ? (sortDir === 'asc' ? ' \u25B2' : ' \u25BC') : '';
                 return h('th', {
@@ -1104,27 +1110,37 @@ function ARv2Tab({ arData }) {
                                 )
                               )
                       ),
-                      // Install Date + Status
+                      // Promised Date
                       h('td', { style: { fontSize: 10 } },
                         isFirstForDeal
-                          ? h('div', null,
-                              deal.install_date ? dateFmt(deal.install_date)
-                                : (tr.pendingInstall
-                                    ? h('span', { style: { color: C.warn, fontSize: 10 } }, 'Pending install date')
-                                    : h('span', { style: { color: C.mid, fontSize: 9 } }, 'No date')),
-                              deal.install_status && deal.install_status !== 'Not Scheduled' && h('div', null,
-                                (function() {
-                                  var st = deal.install_status;
-                                  var col = st === 'Fully Complete' || st === 'Install Complete' ? C.ok
-                                    : st === 'Install Scheduled' || st === 'Install Prep' ? C.blue
-                                    : st === 'Rectifications' || st === 'On Hold' ? C.warn
-                                    : st === 'Cancelled' ? '#9B111E'
-                                    : C.mid;
-                                  return h('span', { style: { fontSize: 8, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
-                                    background: col + '18', color: col, whiteSpace: 'nowrap' } }, st);
-                                })()
-                              )
-                            )
+                          ? (deal.promised_date
+                              ? h('span', { style: { color: C.ok, fontWeight: 500 } }, dateFmt(deal.promised_date))
+                              : h('span', { style: { color: C.mid, fontSize: 9 } }, '\u2014'))
+                          : ''
+                      ),
+                      // Install Date
+                      h('td', { style: { fontSize: 10 } },
+                        isFirstForDeal
+                          ? (deal.install_date
+                              ? dateFmt(deal.install_date)
+                              : (tr.pendingInstall
+                                  ? h('span', { style: { color: C.warn, fontSize: 10 } }, 'Pending')
+                                  : h('span', { style: { color: C.mid, fontSize: 9 } }, '\u2014')))
+                          : ''
+                      ),
+                      // Install Status
+                      h('td', { style: { fontSize: 10 } },
+                        isFirstForDeal && deal.install_status && deal.install_status !== 'Not Scheduled'
+                          ? (function() {
+                              var st = deal.install_status;
+                              var col = st === 'Fully Complete' || st === 'Install Complete' ? C.ok
+                                : st === 'Install Scheduled' || st === 'Install Prep' ? C.blue
+                                : st === 'Rectifications' || st === 'On Hold' ? C.warn
+                                : st === 'Cancelled' ? '#9B111E'
+                                : C.mid;
+                              return h('span', { style: { fontSize: 8, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
+                                background: col + '18', color: col, whiteSpace: 'nowrap' } }, st);
+                            })()
                           : ''
                       ),
                       // Terms
