@@ -637,8 +637,9 @@ function ARv2Tab({ arData }) {
     const earliestDue = datedTranches.length ? datedTranches.map(t => t.date).sort()[0] : null;
     const bucket = ageBucket(earliestDue);
     const days = earliestDue ? ageDays(earliestDue) : null;
-    const usd = Math.round(deal.invoiced_total * fx);
-    return { ...deal, tranches, earliestDue, bucket, days, usd };
+    var localAmt = deal.outstanding_total_inc_tax || deal.invoiced_total_inc_tax || deal.invoiced_total || 0;
+    const usd = Math.round(localAmt * fx);
+    return { ...deal, tranches, earliestDue, bucket, days, usd, localAmt };
   });
 
   const bucketTotals = {};
@@ -701,9 +702,18 @@ function ARv2Tab({ arData }) {
       // KPI ageing buckets
       h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 8, marginBottom: 16 } },
         h('div', { className: 'card kpi', style: { '--c': C.steel } },
-          h('div', { className: 'kpi-label' }, 'Total AR (USD)'),
-          h('div', { className: 'kpi-val' }, fmtF(totalUSD)),
-          h('div', { className: 'kpi-sub' }, deals.length + ' deals'),
+          h('div', { className: 'kpi-label' },
+            entityFilter === 'ALL' ? 'Total AR (USD)' : 'Total AR (' + (CURR[entityFilter]?.c || entityFilter) + ')'
+          ),
+          h('div', { className: 'kpi-val' },
+            entityFilter === 'ALL'
+              ? fmtF(totalUSD)
+              : fmtC(dealsWithAge.reduce(function(s, d) { return s + (d.localAmt || 0); }, 0), entityFilter)
+          ),
+          entityFilter !== 'ALL' && h('div', { className: 'kpi-sub' },
+            '\u2248 ' + fmtF(totalUSD) + ' USD'
+          ),
+          h('div', { className: 'kpi-sub' }, dealsWithAge.length + ' deals'),
         ),
         BUCKETS.filter(b => b !== 'no-date').map(b => h('div', {
           key: b,
@@ -711,7 +721,14 @@ function ARv2Tab({ arData }) {
           style: { '--c': ageBucketColor(b) },
         },
           h('div', { className: 'kpi-label' }, BUCKET_LABELS[b]),
-          h('div', { className: 'kpi-val', style: { fontSize: 16 } }, fmtF(bucketTotals[b].usd)),
+          h('div', { className: 'kpi-val', style: { fontSize: 16 } },
+            entityFilter === 'ALL'
+              ? fmtF(bucketTotals[b].usd)
+              : fmtC(dealsWithAge.filter(function(d) { return d.bucket === b; }).reduce(function(s, d) { return s + (d.localAmt || 0); }, 0), entityFilter)
+          ),
+          entityFilter !== 'ALL' && h('div', { className: 'kpi-sub', style: { fontSize: 9 } },
+            '\u2248 ' + fmtF(bucketTotals[b].usd) + ' USD'
+          ),
           h('div', { className: 'kpi-sub' }, bucketTotals[b].count + ' deals'),
         ))
       ),
@@ -725,8 +742,9 @@ function ARv2Tab({ arData }) {
         h('div', { style: { overflowX: 'auto' } },
           h('table', null,
             h('thead', null, h('tr', null,
-              ['Deal', 'Invoice(s)', 'Entity', 'Invoiced', 'Terms', 'Due Date', 'Age', 'Install Date', 'Tickets', ''].map(col =>
-                h('th', { key: col, style: { fontSize: 10 } }, col)
+              ['Deal', 'Invoice(s)', 'Entity', 'Outstanding', 'Terms', 'Due Date', 'Age', 'Install Date', 'Tickets', ''].map(function(col) {
+                return h('th', { key: col, style: { fontSize: 10 }, title: col === 'Outstanding' ? 'Outstanding balance inc. tax, per HubSpot Invoice Stack' : '' }, col);
+              }
               )
             )),
             h('tbody', null,
@@ -761,7 +779,7 @@ function ARv2Tab({ arData }) {
                           deal.invoice_numbers || '\u2014'
                         ),
                         h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[deal.entity_id] } }, deal.entity_id)),
-                        h('td', { style: { fontWeight: 700, color: C.bad } }, fc(deal.invoiced_total, deal.entity_id)),
+                        h('td', { style: { fontWeight: 700, color: C.bad } }, fc(deal.outstanding_total_inc_tax || deal.invoiced_total_inc_tax || deal.invoiced_total, deal.entity_id)),
                         h('td', { style: { fontSize: 10, color: C.mid, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                           deal.payment_terms_other || deal.payment_terms || '\u2014'
                         ),
@@ -800,7 +818,7 @@ function ARv2Tab({ arData }) {
                       ),
                       // Expanded 50/50 tranche rows
                       isExpanded && deal.tranches.map((tr, ti) => {
-                        const trAmt = Math.round((deal.invoiced_total || 0) * tr.pct / 100);
+                        const trAmt = Math.round((deal.outstanding_total_inc_tax || deal.invoiced_total_inc_tax || deal.invoiced_total || 0) * tr.pct / 100);
                         const trBucket = ageBucket(tr.date);
                         const trDays = tr.date ? ageDays(tr.date) : null;
                         const matchedInv = invList[ti] || null;

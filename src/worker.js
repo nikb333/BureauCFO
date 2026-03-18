@@ -1315,8 +1315,8 @@ export default {
         const hsDealPaidByEntity = {};
         for (const eId of EIDS) {
           const eDeals = deals.filter(d => d.entity_id === eId);
-          hsDealOutstandingByEntity[eId] = eDeals.reduce((s, d) => s + (d.outstanding_total || d.invoiced_total || 0), 0);
-          hsDealInvoicedByEntity[eId] = eDeals.reduce((s, d) => s + (d.invoiced_total || 0), 0);
+          hsDealOutstandingByEntity[eId] = eDeals.reduce((s, d) => s + (d.outstanding_total_inc_tax || d.outstanding_total || d.invoiced_total || 0), 0);
+          hsDealInvoicedByEntity[eId] = eDeals.reduce((s, d) => s + (d.invoiced_total_inc_tax || d.invoiced_total || 0), 0);
           hsDealPaidByEntity[eId] = eDeals.reduce((s, d) => s + (d.paid_total || 0), 0);
         }
 
