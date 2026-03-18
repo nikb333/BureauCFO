@@ -1225,6 +1225,10 @@ export default {
         if(entityId){
           await env.DB.prepare('INSERT OR REPLACE INTO accounting_tokens (entity_id,provider,tenant_id,access_token,refresh_token,expires_at) VALUES(?,?,?,?,?,?)')
             .bind(entityId,'qbo',realmId,tokenData.access_token,tokenData.refresh_token,expiresAt).run();
+        } else {
+          // Save token even if auto-map failed — fix entity_id manually in D1
+          await env.DB.prepare('INSERT OR REPLACE INTO accounting_tokens (entity_id,provider,tenant_id,access_token,refresh_token,expires_at) VALUES(?,?,?,?,?,?)')
+            .bind('UNMAPPED_'+realmId,'qbo',realmId,tokenData.access_token,tokenData.refresh_token,expiresAt).run();
         }
         const html=`<!DOCTYPE html><html><body style="font-family:DM Sans,sans-serif;padding:40px;max-width:600px;margin:0 auto">
           <h2 style="color:#213640">QuickBooks Connected</h2>
