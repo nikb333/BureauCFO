@@ -518,7 +518,18 @@ async function syncFromQBO(entityId, token, env) {
   }));
   const arTotal = arItems.reduce((s, inv) => s + (inv.Balance || 0), 0);
   const apTotal = apRows.reduce((s, r) => s + r.amount, 0);
-  return { ap: apRows, ar_total: arTotal, ap_total: apTotal };
+  const arInvoiceRows = arItems.map(inv => ({
+    entity_id: entityId,
+    qbo_invoice_id: inv.Id,
+    doc_number: inv.DocNumber || '',
+    customer_name: inv.CustomerRef?.name || 'Unknown',
+    amount_total: inv.TotalAmt || 0,
+    balance_due: inv.Balance || 0,
+    txn_date: inv.TxnDate || null,
+    due_date: inv.DueDate || null,
+    currency: inv.CurrencyRef?.value || 'USD',
+  }));
+  return { ap: apRows, ar_total: arTotal, ap_total: apTotal, ar_invoices: arInvoiceRows };
 }
 
 async function syncAllEntities(env, entityFilter) {
@@ -543,7 +554,37 @@ async function syncAllEntities(env, entityFilter) {
       await env.DB.prepare(
         'INSERT OR REPLACE INTO syft_reconciliation (entity_id, ar_total, ap_total, updated_at) VALUES (?,?,?,datetime("now"))'
       ).bind(eId, data.ar_total, data.ap_total).run();
-      results[eId] = { ap_vendors: data.ap.length, ap_total: data.ap_total, ar_total: data.ar_total, provider: token.provider };
+      // Store individual AR invoices (QBO only)
+      if (data.ar_invoices && data.ar_invoices.length > 0) {
+        await env.DB.prepare('DELETE FROM qbo_ar_invoices WHERE entity_id = ?').bind(eId).run();
+        for (const inv of data.ar_invoices) {
+          await env.DB.prepare(
+            'INSERT OR REPLACE INTO qbo_ar_invoices (entity_id, qbo_invoice_id, doc_number, customer_name, amount_total, balance_due, txn_date, due_date, currency) VALUES (?,?,?,?,?,?,?,?,?)'
+          ).bind(inv.entity_id, inv.qbo_invoice_id, inv.doc_number, inv.customer_name, inv.amount_total, inv.balance_due, inv.txn_date, inv.due_date, inv.currency).run();
+        }
+        // Cross-reference QBO invoices against HubSpot deals by invoice number
+        try {
+          const deals = await env.DB.prepare(
+            'SELECT deal_id, deal_name, invoice_numbers FROM hs_ar_deals WHERE entity_id = ? AND invoice_numbers IS NOT NULL'
+          ).bind(eId).all();
+          const invToDeal = {};
+          for (const deal of deals.results) {
+            for (const num of (deal.invoice_numbers || '').split(',').map(s => s.trim())) {
+              if (num) invToDeal[num] = deal.deal_id;
+            }
+          }
+          const qboInvs = await env.DB.prepare('SELECT id, doc_number FROM qbo_ar_invoices WHERE entity_id = ?').bind(eId).all();
+          for (const inv of qboInvs.results) {
+            const dealId = invToDeal[inv.doc_number] || null;
+            const status = dealId ? 'matched' : 'unmatched';
+            await env.DB.prepare('UPDATE qbo_ar_invoices SET linked_deal_id = ?, match_status = ? WHERE id = ?')
+              .bind(dealId, status, inv.id).run();
+          }
+        } catch (matchErr) {
+          console.error('QBO invoice matching failed for ' + eId + ':', matchErr.message);
+        }
+      }
+      results[eId] = { ap_vendors: data.ap.length, ap_total: data.ap_total, ar_total: data.ar_total, ar_invoices: data.ar_invoices?.length || 0, provider: token.provider };
     } catch (e) {
       results[eId] = { error: e.message };
     }
@@ -1401,6 +1442,10 @@ export default {
 
         const uninvoicedDeals = uninvoicedRes.results || [];
 
+        // 50/50 deals with partial invoicing or discrepancies
+        const partialInvoiceDeals = deals.filter(d => d.invoice_coverage_flag === 'partial');
+        const discrepancyDeals = deals.filter(d => d.invoice_coverage_flag === 'discrepancy' || d.invoice_coverage_flag === 'over_invoiced');
+
         return json({
           deals,
           invoicesByDeal,
@@ -1411,6 +1456,8 @@ export default {
           invoicesUnlinked,
           dealsWithoutInvoice,
           uninvoicedDeals,
+          partialInvoiceDeals,
+          discrepancyDeals,
           syftCustomers,
           matched,
           syftOnly,
@@ -1418,6 +1465,80 @@ export default {
           last_sync: syncRes?.value || null,
           syft_last_sync: syftSyncRes?.value || null,
           auuk_coverage_note: 'AU and UK invoice details require Xero API (not yet connected). AU/UK AR is visible via Syft reconciliation tab.',
+        });
+      }
+
+      // ── QBO Reconciliation endpoint ──
+      if (path === '/api/qbo-recon' && method === 'GET') {
+        const entity = url.searchParams.get('entity');
+        const FX = { US: 1, CA: 0.71 };
+
+        let invQ = 'SELECT * FROM qbo_ar_invoices';
+        if (entity && entity !== 'ALL') invQ += " WHERE entity_id = '" + entity + "'";
+        invQ += ' ORDER BY balance_due DESC';
+
+        let dealQ = "SELECT deal_id, deal_name, invoice_numbers, entity_id, invoiced_total, hubspot_deal_url FROM hs_ar_deals WHERE invoice_numbers IS NOT NULL";
+        if (entity && entity !== 'ALL') dealQ += " AND entity_id = '" + entity + "'";
+
+        let apQ = "SELECT * FROM ap_overrides WHERE source = 'qbo'";
+        if (entity && entity !== 'ALL') apQ += " AND entity_id = '" + entity + "'";
+        apQ += ' ORDER BY amount DESC';
+
+        const [invRes, dealRes, apRes, tokenRes] = await Promise.all([
+          env.DB.prepare(invQ).all(),
+          env.DB.prepare(dealQ).all(),
+          env.DB.prepare(apQ).all(),
+          env.DB.prepare("SELECT entity_id, updated_at, expires_at FROM accounting_tokens WHERE provider = 'qbo' ORDER BY entity_id").all(),
+        ]);
+
+        const invoices = invRes.results || [];
+        const deals = dealRes.results || [];
+        const apBills = apRes.results || [];
+
+        const matched = invoices.filter(i => i.match_status === 'matched');
+        const unmatched = invoices.filter(i => i.match_status === 'unmatched');
+
+        // Deals with QBO-style invoice numbers not found in QBO
+        const qboDocNums = new Set(invoices.map(i => i.doc_number));
+        const dealsWithMissingQBO = deals.filter(d => {
+          const nums = (d.invoice_numbers || '').split(',').map(s => s.trim()).filter(Boolean);
+          const qboNums = nums.filter(n => !n.startsWith('INV-'));
+          return qboNums.length > 0 && qboNums.some(n => !qboDocNums.has(n));
+        });
+
+        const EIDS = entity && entity !== 'ALL' ? [entity] : ['US', 'CA'];
+        const summary = EIDS.map(eId => {
+          const fx = FX[eId] || 1;
+          const eInv = invoices.filter(i => i.entity_id === eId);
+          const eAP = apBills.filter(a => a.entity_id === eId);
+          const totalAR = eInv.reduce((s, i) => s + (i.balance_due || 0), 0);
+          const matchedAR = eInv.filter(i => i.match_status === 'matched').reduce((s, i) => s + (i.balance_due || 0), 0);
+          const unmatchedAR = totalAR - matchedAR;
+          const totalAP = eAP.reduce((s, a) => s + (a.amount || 0), 0);
+          return {
+            entity_id: eId,
+            total_ar: Math.round(totalAR),
+            matched_ar: Math.round(matchedAR),
+            unmatched_ar: Math.round(unmatchedAR),
+            total_ap: Math.round(totalAP),
+            invoice_count: eInv.length,
+            matched_count: eInv.filter(i => i.match_status === 'matched').length,
+            unmatched_count: eInv.filter(i => i.match_status === 'unmatched').length,
+            total_ar_usd: Math.round(totalAR * fx),
+            unmatched_ar_usd: Math.round(unmatchedAR * fx),
+            total_ap_usd: Math.round(totalAP * fx),
+          };
+        });
+
+        const token = tokenRes.results || [];
+        return json({
+          summary,
+          matched,
+          unmatched,
+          dealsWithMissingQBO,
+          apBills,
+          tokens: token,
+          entity_filter: entity || 'ALL',
         });
       }
 
