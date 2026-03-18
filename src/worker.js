@@ -630,7 +630,7 @@ async function syncFromSheet(env) {
   }
 
   const results = {};
-  for (const eId of ['AU', 'UK', 'US', 'CA']) results[eId] = { ar_total: 0, ap_total: 0, ap: [] };
+  for (const eId of ['AU', 'UK', 'US', 'CA']) results[eId] = { ar_total: 0, ap_total: 0, ap: [], ar: [] };
 
   for (const section of sections) {
     const tdCol = findTotalDueCol(section.col, section.endCol);
@@ -638,10 +638,26 @@ async function syncFromSheet(env) {
     const eId = section.entityId;
 
     if (section.type === 'ar') {
-      // Find "Total" summary row → AR total
+      // Find customer name column (first column of the section)
+      let custNameCol = section.col;
+      for (let c = section.col; c < section.endCol; c++) {
+        const hdr = String(row7[c] || '').trim().toLowerCase();
+        if (hdr.includes('customer') || hdr.includes('name') || hdr.includes('contact')) { custNameCol = c; break; }
+      }
+      // Read individual customer rows until "Total"
       for (let r = 7; r < rows.length; r++) {
-        const firstCell = String((rows[r] || [])[section.col] || '').trim().toLowerCase();
-        if (firstCell === 'total') { results[eId].ar_total = parseFloat((rows[r] || [])[tdCol]) || 0; break; }
+        const row = rows[r] || [];
+        const name = String(row[custNameCol] || '').trim();
+        if (!name) continue;
+        const nl = name.toLowerCase();
+        if (nl === 'total' || nl.includes('percentage') || nl.includes('currency rate')) {
+          if (nl === 'total') results[eId].ar_total = parseFloat(row[tdCol]) || 0;
+          break;
+        }
+        const amount = parseFloat(row[tdCol]) || 0;
+        if (amount > 0) {
+          results[eId].ar.push({ customer_name: name, amount: Math.round(amount * 100) / 100 });
+        }
       }
     } else {
       // Find supplier name column
@@ -679,8 +695,17 @@ async function syncFromSheet(env) {
     }
     // Update AR/AP totals
     await env.DB.prepare('INSERT OR REPLACE INTO syft_reconciliation (entity_id, ar_total, ap_total, as_of_date, updated_at) VALUES (?,?,?,date("now"),datetime("now"))').bind(eId, r.ar_total, r.ap_total).run();
+    // Write individual AR customer rows
+    const CURR_MAP = { AU: 'AUD', UK: 'GBP', US: 'USD', CA: 'CAD' };
+    await env.DB.prepare("DELETE FROM syft_ar_customers WHERE entity_id=?").bind(eId).run();
+    for (const row of r.ar) {
+      await env.DB.prepare(
+        "INSERT INTO syft_ar_customers (entity_id, currency, customer_name, total_due) VALUES (?,?,?,?)"
+      ).bind(eId, CURR_MAP[eId] || 'USD', row.customer_name, row.amount).run();
+    }
   }
   await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('syft_last_sync', datetime('now'))").run();
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('syft_customers_last_sync', datetime('now'))").run();
   return results;
 }
 
@@ -1214,44 +1239,97 @@ export default {
         return new Response(html,{headers:{'Content-Type':'text/html'}});
       }
 
-      // ── AR v2: deal-centric AR from HubSpot ──
-      // ── AR v2: deal-centric AR from HubSpot (data synced via local script) ──
+      // ── AR v2: deal-centric AR from HubSpot + Syft reconciliation ──
       if (path === '/api/ar-v2' && method === 'GET') {
         const entity = url.searchParams.get('entity');
         let dealsQ = 'SELECT * FROM hs_ar_deals';
-        if (entity && entity !== 'ALL') dealsQ += ` WHERE entity_id=?`;
+        if (entity && entity !== 'ALL') dealsQ += ` WHERE entity_id='${entity}'`;
         dealsQ += ' ORDER BY invoiced_total DESC';
+        let syftQ = 'SELECT * FROM syft_ar_customers';
+        if (entity && entity !== 'ALL') syftQ += ` WHERE entity_id='${entity}'`;
+        syftQ += ' ORDER BY total_due DESC';
 
-        let invoicesQ = 'SELECT * FROM hs_invoices WHERE deal_id IS NULL';
-        if (entity && entity !== 'ALL') invoicesQ += ` AND entity_id=?`;
-        invoicesQ += ' ORDER BY hs_amount_billed DESC';
-
-        const dealsStmt = entity && entity !== 'ALL' ? env.DB.prepare(dealsQ).bind(entity) : env.DB.prepare(dealsQ);
-        const invStmt = entity && entity !== 'ALL' ? env.DB.prepare(invoicesQ).bind(entity) : env.DB.prepare(invoicesQ);
-
-        const [dealsRes, unlinkedRes, syncRes] = await Promise.all([
-          dealsStmt.all(),
-          invStmt.all(),
+        const [dealsRes, syftRes, syncRes, syftSyncRes] = await Promise.all([
+          env.DB.prepare(dealsQ).all(),
+          env.DB.prepare(syftQ).all(),
           env.DB.prepare("SELECT value FROM settings WHERE key='hubspot_ar_last_sync'").first(),
+          env.DB.prepare("SELECT value FROM settings WHERE key='syft_customers_last_sync'").first(),
         ]);
+        const deals = dealsRes.results;
+        const syftCustomers = syftRes.results;
 
-        // Build invoice detail map for each deal
-        const dealIdsArr = dealsRes.results.map(d => d.deal_id);
+        // Build invoice-by-deal lookup
+        const dealIds = deals.map(d => d.deal_id);
         let invoicesByDeal = {};
-        if (dealIdsArr.length > 0) {
-          const placeholders = dealIdsArr.map(() => '?').join(',');
-          const invRes = await env.DB.prepare(`SELECT * FROM hs_invoices WHERE deal_id IN (${placeholders})`).bind(...dealIdsArr).all();
+        if (dealIds.length > 0) {
+          const placeholders = dealIds.map(() => '?').join(',');
+          const invRes = await env.DB.prepare(`SELECT * FROM hs_invoices WHERE deal_id IN (${placeholders})`).bind(...dealIds).all();
           for (const inv of invRes.results) {
             if (!invoicesByDeal[inv.deal_id]) invoicesByDeal[inv.deal_id] = [];
             invoicesByDeal[inv.deal_id].push(inv);
           }
         }
 
+        // ── Fuzzy name matching ──
+        const STRIP_WORDS = new Set(['ltd','pty','inc','the','limited','llc','plc','group','corp','corporation','co','and','of','for','a','an','services','solutions','company','holdings','enterprises','consulting','international','australia','canada','uk','usa','us']);
+        function normTokens(name) {
+          return (name || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, ' ')
+            .split(/\s+/)
+            .filter(w => w.length > 2 && !STRIP_WORDS.has(w));
+        }
+        function fuzzyMatch(syftName, dealName) {
+          const sTokens = normTokens(syftName);
+          const dTokens = normTokens(dealName);
+          if (!sTokens.length || !dTokens.length) return 0;
+          const sStr = sTokens.join(' ');
+          const dStr = dTokens.join(' ');
+          if (sStr === dStr) return 100;
+          if (dStr.includes(sStr) || sStr.includes(dStr)) return 85;
+          if (sTokens[0] && dTokens[0] && sTokens[0] === dTokens[0] && sTokens[0].length > 3) return 75;
+          const sSet = new Set(sTokens);
+          const shared = dTokens.filter(w => sSet.has(w));
+          if (shared.length >= 2) return 60 + shared.length * 5;
+          if (shared.length === 1 && shared[0].length > 4) return 50;
+          return 0;
+        }
+
+        const MATCH_THRESHOLD = 50;
+        const matched = [];
+        const syftOnly = [];
+        const dealMatched = new Set();
+        for (const sc of syftCustomers) {
+          let bestScore = 0, bestDeal = null;
+          for (const deal of deals) {
+            const score = fuzzyMatch(sc.customer_name, deal.deal_name);
+            const entityBonus = (sc.entity_id === deal.entity_id) ? 10 : 0;
+            const total = score + entityBonus;
+            if (total > bestScore) { bestScore = total; bestDeal = deal; }
+          }
+          if (bestDeal && bestScore >= MATCH_THRESHOLD) {
+            matched.push({
+              syft: sc,
+              deal: bestDeal,
+              score: bestScore,
+              gap: Math.round(sc.total_due - (bestDeal.invoiced_total || 0)),
+            });
+            dealMatched.add(bestDeal.deal_id);
+          } else {
+            syftOnly.push(sc);
+          }
+        }
+        const hubspotOnly = deals.filter(d => !dealMatched.has(d.deal_id));
+
         return json({
-          deals: dealsRes.results,
+          deals,
           invoicesByDeal,
-          unlinked: unlinkedRes.results,
+          syftCustomers,
+          matched,
+          syftOnly,
+          hubspotOnly,
           last_sync: syncRes?.value || null,
+          syft_last_sync: syftSyncRes?.value || null,
         });
       }
 
