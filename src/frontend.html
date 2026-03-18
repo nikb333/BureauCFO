@@ -607,7 +607,7 @@ function ARv2Tab({ arData }) {
   const data = localData;
   if (!data) return h('div', { className: 'loading' }, 'Loading AR data...');
 
-  const { deals, invoicesByDeal, unlinked, last_sync } = data;
+  const { deals, invoicesByDeal, unlinked, last_sync, matched, syftOnly, hubspotOnly, syft_last_sync } = data;
   const EIDs = ['ALL', 'US', 'CA', 'UK', 'AU'];
 
   const BUCKETS = ['current', '1-30', '31-60', '61-90', '90+', 'no-date'];
@@ -665,7 +665,7 @@ function ARv2Tab({ arData }) {
         h('div', { style: { display: 'flex', gap: 6, marginLeft: 8 } },
           [
             { id: 'ageing', l: 'Ageing Summary' },
-            { id: 'recon', l: 'Reconciliation (' + unlinked.length + ')' },
+            { id: 'recon', l: 'Reconciliation (' + ((syftOnly||[]).length + (hubspotOnly||[]).length) + ' gaps)' },
           ].map(s => h('button', {
             key: s.id,
             className: 'pill' + (arSub === s.id ? ' active' : ''),
@@ -820,61 +820,123 @@ function ARv2Tab({ arData }) {
       )
     ),
 
-    // RECONCILIATION SUB-TAB
+    // RECONCILIATION SUB-TAB — Syft vs HubSpot fuzzy matching
     arSub === 'recon' && h('div', null,
-      h('div', { className: 'grid-4', style: { marginBottom: 16 } },
-        h('div', { className: 'card kpi', style: { '--c': C.warn } },
-          h('div', { className: 'kpi-label' }, 'Unlinked Invoices'),
-          h('div', { className: 'kpi-val' }, unlinked.length),
-          h('div', { className: 'kpi-sub' }, fmtF(Math.round(unlinkedUSD)) + ' USD'),
+      // KPI summary row
+      h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 16 } },
+        h('div', { className: 'card kpi', style: { '--c': C.ok } },
+          h('div', { className: 'kpi-label' }, 'Matched'),
+          h('div', { className: 'kpi-val' }, (matched||[]).length),
+          h('div', { className: 'kpi-sub' }, 'Syft clients linked to a HubSpot deal'),
         ),
-        h('div', { className: 'card kpi', style: { '--c': C.steel } },
-          h('div', { className: 'kpi-label' }, 'Linked Invoices'),
-          h('div', { className: 'kpi-val' }, deals.length + ' deals'),
-          h('div', { className: 'kpi-sub' }, fmtF(totalUSD) + ' USD'),
+        h('div', { className: 'card kpi', style: { '--c': C.warn } },
+          h('div', { className: 'kpi-label' }, 'Syft Only'),
+          h('div', { className: 'kpi-val' }, (syftOnly||[]).length),
+          h('div', { className: 'kpi-sub' }, 'In accounting, no open HubSpot deal'),
+        ),
+        h('div', { className: 'card kpi', style: { '--c': C.blue } },
+          h('div', { className: 'kpi-label' }, 'HubSpot Only'),
+          h('div', { className: 'kpi-val' }, (hubspotOnly||[]).length),
+          h('div', { className: 'kpi-sub' }, 'Open deal, not yet in Syft'),
         ),
       ),
-      h('div', { className: 'card' },
+      // Section 1: Syft Only (needs investigation)
+      h('div', { className: 'card', style: { marginBottom: 16 } },
         h('div', { className: 'card-hdr', style: { background: '#FFF8E1', color: C.warn } },
-          h('span', null, 'Invoices Not Linked to a HubSpot Deal'),
-          h('span', null, unlinked.length + ' invoices \u2014 investigate for duplicates or timing gaps'),
+          h('span', null, 'In Syft, No Matching HubSpot Deal'),
+          h('span', null, (syftOnly||[]).length + ' clients'),
         ),
-        unlinked.length === 0
-          ? h('div', { style: { padding: 24, textAlign: 'center', color: C.ok, fontSize: 13 } }, '\u2713 All open invoices are linked to HubSpot deals')
+        (syftOnly||[]).length === 0
+          ? h('div', { style: { padding: 16, color: C.ok, textAlign: 'center' } }, '\u2713 All Syft clients matched to open deals')
           : h('div', { style: { overflowX: 'auto' } },
               h('table', null,
                 h('thead', null, h('tr', null,
-                  ['Invoice #', 'Title', 'Entity', 'Currency', 'Amount', 'Due Date', 'Created', ''].map(col =>
-                    h('th', { key: col, style: { fontSize: 10 } }, col)
-                  )
+                  ['Entity', 'Client (Syft)', 'Currency', 'Outstanding'].map(function(col, i) {
+                    return h('th', { key: i, style: { fontSize: 10 } }, col);
+                  })
                 )),
                 h('tbody', null,
-                  unlinked.map((inv, i) => {
-                    const bucket = ageBucket(inv.hs_due_date);
-                    return h('tr', { key: inv.id, style: { background: i % 2 ? '#FAFAF8' : '#fff' } },
-                      h('td', { style: { fontWeight: 600, fontFamily: 'monospace', fontSize: 11 } }, inv.hs_number || inv.id),
-                      h('td', { style: { fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, inv.hs_title || '\u2014'),
-                      h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[inv.entity_id] || C.mid } }, inv.entity_id)),
-                      h('td', { style: { fontSize: 10, color: C.mid } }, inv.hs_currency),
-                      h('td', { style: { fontWeight: 600, color: C.bad } }, fmtC(inv.hs_amount_billed, inv.entity_id)),
-                      h('td', { style: { fontSize: 10, color: ageBucketColor(bucket) } },
-                        inv.hs_due_date ? dateFmt(inv.hs_due_date) : '\u2014'
-                      ),
-                      h('td', { style: { fontSize: 10, color: C.mid } },
-                        inv.synced_at ? new Date(inv.synced_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }) : '\u2014'
-                      ),
-                      h('td', null,
-                        h('a', {
-                          href: 'https://app.hubspot.com/contacts/44093193/objects/0-53/views/all/list?query=' + encodeURIComponent(inv.hs_number || inv.id),
-                          target: '_blank',
-                          style: { fontSize: 10, color: C.blue },
-                        }, '\u2197')
-                      ),
+                  (syftOnly||[]).map(function(sc, i) {
+                    return h('tr', { key: i, style: { background: i%2 ? '#FAFAF8' : '#fff' } },
+                      h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[sc.entity_id] || C.mid } }, sc.entity_id)),
+                      h('td', { style: { fontWeight: 500 } }, sc.customer_name),
+                      h('td', { style: { fontSize: 10, color: C.mid } }, sc.currency),
+                      h('td', { style: { fontWeight: 600, color: C.bad } }, fmtC(sc.total_due, sc.entity_id))
                     );
                   })
                 )
               )
             )
+      ),
+      // Section 2: Matched (with gap highlighting)
+      h('div', { className: 'card', style: { marginBottom: 16 } },
+        h('div', { className: 'card-hdr', style: { background: '#E2F5EC', color: C.ok } },
+          h('span', null, 'Matched \u2014 Syft \u2194 HubSpot'),
+          h('span', null, (matched||[]).length + ' clients reconciled'),
+        ),
+        h('div', { style: { overflowX: 'auto' } },
+          h('table', null,
+            h('thead', null, h('tr', null,
+              ['Entity', 'Client (Syft)', 'Syft Amount', 'HubSpot Deal', 'HS Invoiced', 'Gap'].map(function(col, i) {
+                return h('th', { key: i, style: { fontSize: 10 } }, col);
+              })
+            )),
+            h('tbody', null,
+              (matched||[]).sort(function(a,b) { return Math.abs(b.gap) - Math.abs(a.gap); }).map(function(m, i) {
+                var gapAbs = Math.abs(m.gap);
+                var gapColor = gapAbs < 100 ? C.ok : gapAbs < 5000 ? C.warn : C.bad;
+                return h('tr', { key: i, style: { background: i%2 ? '#FAFAF8' : '#fff' } },
+                  h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[m.syft.entity_id] || C.mid } }, m.syft.entity_id)),
+                  h('td', { style: { fontSize: 11, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, m.syft.customer_name),
+                  h('td', { style: { fontWeight: 600, color: C.bad } }, fmtC(m.syft.total_due, m.syft.entity_id)),
+                  h('td', { style: { fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                    m.deal.hubspot_deal_url
+                      ? h('a', { href: m.deal.hubspot_deal_url, target: '_blank', style: { color: C.steel, textDecoration: 'none', borderBottom: '1px dotted #C4C3C1' } }, m.deal.deal_name)
+                      : m.deal.deal_name
+                  ),
+                  h('td', { style: { fontWeight: 600, color: C.bad } }, fmtC(m.deal.invoiced_total, m.deal.entity_id)),
+                  h('td', { style: { fontWeight: 600, color: gapColor, fontSize: 11 } },
+                    gapAbs < 100 ? h('span', { style: { color: C.ok } }, '\u2713')
+                      : (m.gap > 0 ? '+' : '') + fmtC(m.gap, m.syft.entity_id)
+                  )
+                );
+              })
+            )
+          )
+        )
+      ),
+      // Section 3: HubSpot Only (open deals not yet in Syft)
+      (hubspotOnly||[]).length > 0 && h('div', { className: 'card' },
+        h('div', { className: 'card-hdr', style: { background: '#EDF2FE', color: C.blue } },
+          h('span', null, 'Open HubSpot Deals \u2014 Not Yet in Syft'),
+          h('span', null, (hubspotOnly||[]).length + ' deals'),
+        ),
+        h('div', { style: { overflowX: 'auto' } },
+          h('table', null,
+            h('thead', null, h('tr', null,
+              ['Entity', 'Deal', 'Owner', 'Invoiced', 'Terms'].map(function(col, i) {
+                return h('th', { key: i, style: { fontSize: 10 } }, col);
+              })
+            )),
+            h('tbody', null,
+              (hubspotOnly||[]).sort(function(a,b) { return b.invoiced_total - a.invoiced_total; }).map(function(d, i) {
+                return h('tr', { key: i, style: { background: i%2 ? '#FAFAF8' : '#fff' } },
+                  h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[d.entity_id] || C.mid } }, d.entity_id)),
+                  h('td', { style: { fontWeight: 500, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                    d.hubspot_deal_url
+                      ? h('a', { href: d.hubspot_deal_url, target: '_blank', style: { color: C.steel, textDecoration: 'none', borderBottom: '1px dotted #C4C3C1' } }, d.deal_name)
+                      : d.deal_name
+                  ),
+                  h('td', { style: { fontSize: 10, color: C.mid } }, d.owner_name || '\u2014'),
+                  h('td', { style: { fontWeight: 600, color: C.bad } }, fmtC(d.invoiced_total, d.entity_id)),
+                  h('td', { style: { fontSize: 10, color: C.mid, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                    d.payment_terms || '\u2014'
+                  )
+                );
+              })
+            )
+          )
+        )
       )
     )
   );
