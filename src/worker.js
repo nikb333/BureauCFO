@@ -1243,8 +1243,8 @@ export default {
       if (path === '/api/ar-v2' && method === 'GET') {
         const entity = url.searchParams.get('entity');
 
-        let dealsQ = 'SELECT * FROM hs_ar_deals';
-        if (entity && entity !== 'ALL') dealsQ += ` WHERE entity_id='${entity}'`;
+        let dealsQ = 'SELECT * FROM hs_ar_deals WHERE (is_closed_won IS NULL OR is_closed_won = 1)';
+        if (entity && entity !== 'ALL') dealsQ += ` AND entity_id='${entity}'`;
         dealsQ += ' ORDER BY invoiced_total DESC';
 
         let invoicesQ = "SELECT * FROM hs_invoices WHERE hs_status = 'open' AND COALESCE(hs_balance_due, hs_amount_billed) > 0";
