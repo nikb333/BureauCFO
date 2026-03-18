@@ -672,6 +672,7 @@ function ARv2Tab({ arData }) {
   var invoicesLinkedNoMatch = data.invoicesLinkedNoMatch || [];
   var invoicesUnlinked = data.invoicesUnlinked || [];
   var dealsWithoutInvoice = data.dealsWithoutInvoice || [];
+  var uninvoicedDeals = data.uninvoicedDeals || [];
   var arWaterfall = data.arWaterfall || [];
   var arWaterfallTotals = data.arWaterfallTotals || {};
 
@@ -1165,7 +1166,7 @@ function ARv2Tab({ arData }) {
       ),
 
       // KPI summary row (always visible)
-      h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 16 } },
+      h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 8, marginBottom: 16 } },
         h('div', { className: 'card kpi', style: { '--c': C.steel } },
           h('div', { className: 'kpi-label' }, 'Open Invoices'),
           h('div', { className: 'kpi-val' }, invoicesLinkedToDeal.length + invoicesLinkedNoMatch.length + invoicesUnlinked.length),
@@ -1183,12 +1184,104 @@ function ARv2Tab({ arData }) {
           ),
           h('div', { className: 'kpi-sub' }, invoicesUnlinked.length + ' invoices \u2014 CA/US only'),
         ),
+        h('div', { className: 'card kpi', style: { '--c': C.bad } },
+          h('div', { className: 'kpi-label' }, 'Needs Invoice'),
+          h('div', { className: 'kpi-val' }, uninvoicedDeals.length),
+          h('div', { className: 'kpi-sub' }, 'Closed won \u00B7 no real invoice'),
+        ),
         h('div', { className: 'card kpi', style: { '--c': C.blue } },
           h('div', { className: 'kpi-label' }, 'Syft Gaps'),
           h('div', { className: 'kpi-val' }, (syftOnly||[]).length),
           h('div', { className: 'kpi-sub' }, 'Syft-only clients'),
         ),
       ),
+      // ── Closed Won Deals — No Real Invoice Linked ──
+      uninvoicedDeals.length > 0 && h('div', { className: 'card', style: { marginBottom: 16 } },
+        h('div', { className: 'card-hdr' },
+          h('span', null, 'Closed Won \u2014 No Real Invoice Linked'),
+          h('span', { style: { fontSize: 10, color: C.bad, fontWeight: 600 } },
+            uninvoicedDeals.length + ' deals \u00B7 action required'
+          )
+        ),
+        h('div', { style: { padding: '8px 16px', background: '#FEF3D6',
+          borderBottom: '1px solid #F0DDA0', fontSize: 10, color: '#8B6914' } },
+          h('strong', null, 'What this means: '),
+          '"No Invoice" = deal is Closed Won but Invoice Stack shows no invoice number at all \u2014 real invoice may exist in the accounting system but has not been linked to this deal in HubSpot. ',
+          '"Draft Only" = an invoice number IS in HubSpot but it is an auto-generated draft, not the real invoice sent to the client. ',
+          h('strong', null, 'Both require action: '),
+          'the real invoice number must be manually entered into the HubSpot deal\'s "Invoice Numbers" field so it appears in AR ageing and reconciliation correctly.'
+        ),
+        h('table', null,
+          h('thead', null, h('tr', null,
+            ['Entity', 'Deal', 'Owner', 'Deal Amount', 'Close Date', 'Status', 'Draft/Wrong Invoice #s', ''].map(function(col, ci) {
+              return h('th', { key: ci, style: { fontSize: 10 } }, col);
+            })
+          )),
+          h('tbody', null,
+            uninvoicedDeals.map(function(deal, i) {
+              var isDraftOnly = deal.reason === 'draft_only';
+              return h('tr', { key: i, style: { background: i%2 ? '#FAFAF8' : '#fff' } },
+                h('td', null,
+                  h('span', { style: { fontSize: 10, fontWeight: 700,
+                    color: C.ent[deal.entity_id] || C.mid } }, deal.entity_id)
+                ),
+                h('td', null,
+                  h('a', { href: deal.hubspot_deal_url, target: '_blank',
+                    style: { fontSize: 11, fontWeight: 600, color: C.blue,
+                             textDecoration: 'none', borderBottom: '1px dotted #C4C3C1' } },
+                    deal.deal_name && deal.deal_name.length > 40
+                      ? deal.deal_name.slice(0, 40) + '\u2026'
+                      : deal.deal_name
+                  )
+                ),
+                h('td', { style: { fontSize: 10, color: C.mid } }, deal.owner_name),
+                h('td', { style: { fontWeight: 700, color: C.bad } },
+                  fmtC(deal.deal_amount, deal.entity_id)
+                ),
+                h('td', { style: { fontSize: 10, color: C.mid } },
+                  deal.close_date ? dateFmt(deal.close_date) : '\u2014'
+                ),
+                h('td', null,
+                  h('span', {
+                    style: {
+                      fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                      borderRadius: 4,
+                      background: isDraftOnly ? '#FEF3D6' : '#FDECEA',
+                      color: isDraftOnly ? '#8B6914' : C.bad
+                    }
+                  }, isDraftOnly ? 'Draft Only' : 'No Invoice')
+                ),
+                h('td', { style: { fontSize: 10, color: C.mid, fontStyle: 'italic' } },
+                  isDraftOnly
+                    ? (deal.draft_invoice_numbers || '\u2014')
+                    : h('span', { style: { color: C.mid } }, 'None in HubSpot')
+                ),
+                h('td', null,
+                  h('a', { href: deal.hubspot_deal_url, target: '_blank',
+                    style: { fontSize: 10, color: C.blue } }, '\u2197 Fix in HubSpot')
+                )
+              );
+            })
+          )
+        ),
+        h('div', {
+          style: { padding: '8px 16px', borderTop: '1px solid #E8E7E3',
+                   display: 'flex', justifyContent: 'space-between',
+                   fontSize: 11, background: '#FAFAF8' }
+        },
+          h('span', { style: { color: C.mid } },
+            uninvoicedDeals.filter(function(d) { return d.reason === 'no_invoice'; }).length + ' with no invoice \u00B7 ',
+            uninvoicedDeals.filter(function(d) { return d.reason === 'draft_only'; }).length + ' draft only'
+          ),
+          h('span', { style: { fontWeight: 700, color: C.bad } },
+            '\u2248 ' + fmt(uninvoicedDeals.reduce(function(s, d) {
+              var fx = { US: 1, CA: 0.71, UK: 1.33, AU: 0.68 }[d.entity_id] || 1;
+              return s + (d.deal_amount || 0) * fx;
+            }, 0)) + ' USD at risk'
+          )
+        )
+      ),
+
       // Mode toggle pills
       h('div', { style: { display: 'flex', gap: 6, marginBottom: 16 } },
         ['invoices', 'syft'].map(function(mode) {
