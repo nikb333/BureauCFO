@@ -1294,7 +1294,7 @@ export default {
         if (entity && entity !== 'ALL') syftQ += ` WHERE entity_id='${entity}'`;
         syftQ += ' ORDER BY total_due DESC';
 
-        const [dealsRes, invoicesRes, syftRes, syftReconRes, syncRes, syftSyncRes, uninvoicedRes] = await Promise.all([
+        const [dealsRes, invoicesRes, syftRes, syftReconRes, syncRes, syftSyncRes, uninvoicedRes, qboUnmatchedRes] = await Promise.all([
           env.DB.prepare(dealsQ).all(),
           env.DB.prepare(invoicesQ).all(),
           env.DB.prepare(syftQ).all(),
@@ -1302,6 +1302,7 @@ export default {
           env.DB.prepare("SELECT value FROM settings WHERE key='hubspot_ar_last_sync'").first(),
           env.DB.prepare("SELECT value FROM settings WHERE key='syft_customers_last_sync'").first(),
           env.DB.prepare('SELECT * FROM hs_deals_uninvoiced ORDER BY deal_amount DESC').all(),
+          env.DB.prepare("SELECT entity_id, doc_number, customer_name, amount_total, balance_due, txn_date, due_date FROM qbo_ar_invoices WHERE match_status = 'unmatched' AND balance_due > 0 ORDER BY entity_id, balance_due DESC").all(),
         ]);
 
         const deals = dealsRes.results;
@@ -1446,6 +1447,14 @@ export default {
         const partialInvoiceDeals = deals.filter(d => d.invoice_coverage_flag === 'partial');
         const discrepancyDeals = deals.filter(d => d.invoice_coverage_flag === 'discrepancy' || d.invoice_coverage_flag === 'over_invoiced');
 
+        // QBO unmatched invoices
+        const qboUnmatched = qboUnmatchedRes.results || [];
+        const qboUnmatchedTotals = {
+          CA: Math.round(qboUnmatched.filter(i => i.entity_id === 'CA').reduce((s,i) => s + (i.balance_due||0), 0)),
+          US: Math.round(qboUnmatched.filter(i => i.entity_id === 'US').reduce((s,i) => s + (i.balance_due||0), 0)),
+          USD: Math.round(qboUnmatched.reduce((s,i) => s + (i.balance_due||0) * (FX[i.entity_id]||1), 0)),
+        };
+
         return json({
           deals,
           invoicesByDeal,
@@ -1458,6 +1467,8 @@ export default {
           uninvoicedDeals,
           partialInvoiceDeals,
           discrepancyDeals,
+          qboUnmatched,
+          qboUnmatchedTotals,
           syftCustomers,
           matched,
           syftOnly,

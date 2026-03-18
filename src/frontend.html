@@ -666,6 +666,7 @@ function ARv2Tab({ arData }) {
   var _s = us('chasing'); var arSub = _s[0]; var setArSub = _s[1];
   var _e = us('ALL'); var entityFilter = _e[0]; var setEntityFilter = _e[1];
   var _rm = us('invoices'); var reconMode = _rm[0]; var setReconMode = _rm[1];
+  var _qf = us('ALL'); var qboFilter = _qf[0]; var setQboFilter = _qf[1];
   var _ld = us(arData); var localData = _ld[0]; var setLocalData = _ld[1];
   var _ow = us('All'); var ownerFilter = _ow[0]; var setOwnerFilter = _ow[1];
   var _so = us('Due Date'); var sortBy = _so[0]; var setSortBy = _so[1];
@@ -1204,6 +1205,160 @@ function ARv2Tab({ arData }) {
         )
       ),
 
+      // ── QBO Unmatched Invoices ──
+      (function() {
+        var qboUnmatched = data.qboUnmatched || [];
+        var qboFiltered = qboFilter === 'ALL' ? qboUnmatched : qboUnmatched.filter(function(i) { return i.entity_id === qboFilter; });
+        return qboUnmatched.length > 0 && h('div', { className: 'card', style: { marginBottom: 16 } },
+          h('div', { className: 'card-hdr' },
+            h('span', null, 'QBO Invoices \u2014 Not Linked to Any HubSpot Deal'),
+            h('div', { style: { display: 'flex', gap: 12, fontSize: 10, alignItems: 'center' } },
+              h('span', { style: { color: C.ent.CA, fontWeight: 600 } },
+                'CA: ' + fmtC(data.qboUnmatchedTotals?.CA || 0, 'CA')
+              ),
+              h('span', { style: { color: C.ent.US, fontWeight: 600 } },
+                'US: ' + fmt(data.qboUnmatchedTotals?.US || 0)
+              ),
+              h('span', { style: { fontWeight: 700, color: C.bad } },
+                '\u2248 ' + fmt(data.qboUnmatchedTotals?.USD || 0) + ' USD total'
+              )
+            )
+          ),
+          h('div', { style: { padding: '8px 14px', fontSize: 10, color: C.mid,
+            background: '#FAFAF8', borderBottom: '1px solid #E8E7E3', lineHeight: 1.6 } },
+            h('strong', null, 'What this is: '),
+            'Open invoices in QuickBooks Online (CA & US) that cannot be matched to any open HubSpot deal. ',
+            'These are the primary reason your QBO AR total exceeds your HubSpot deal total. ',
+            'Each invoice needs manual review \u2014 likely causes: ',
+            h('span', { style: { color: C.bad, fontWeight: 600 } }, '(a) real deal not yet in HubSpot'),
+            ', ',
+            h('span', { style: { color: C.warn, fontWeight: 600 } }, '(b) duplicate / voided invoice not cleared in QBO'),
+            ', ',
+            h('span', { style: { color: C.ok, fontWeight: 600 } }, '(c) deal closed in HubSpot but not in QBO'),
+            ', or ',
+            h('span', { style: { color: C.mid } }, '(d) pre-Invoice Stack invoice outside of HubSpot pipeline'),
+            '.'
+          ),
+          h('div', { style: { padding: '6px 14px', display: 'flex', gap: 6,
+            borderBottom: '1px solid #E8E7E3', background: '#fff' } },
+            ['ALL', 'CA', 'US'].map(function(eId) {
+              var count = eId === 'ALL'
+                ? qboUnmatched.length
+                : qboUnmatched.filter(function(i) { return i.entity_id === eId; }).length;
+              var col = eId === 'CA' ? C.ent.CA : eId === 'US' ? C.ent.US : C.steel;
+              var active = qboFilter === eId;
+              return h('button', {
+                key: eId,
+                onClick: function() { setQboFilter(eId); },
+                style: {
+                  padding: '3px 10px', borderRadius: 12, fontSize: 10, cursor: 'pointer',
+                  fontWeight: active ? 700 : 400, fontFamily: 'inherit',
+                  border: active ? '2px solid ' + col : '1px solid #E8E7E3',
+                  background: active ? col + '18' : '#fff',
+                  color: active ? col : C.mid,
+                }
+              }, eId + ' (' + count + ')');
+            })
+          ),
+          h('div', { style: { overflowX: 'auto' } },
+            h('table', null,
+              h('thead', null, h('tr', null,
+                ['Entity', 'Invoice #', 'Customer', 'Total Billed', 'Balance Due',
+                 'Issued', 'Due Date', 'Age', 'Likely Reason'].map(function(col, i) {
+                  return h('th', { key: i, style: { fontSize: 10 } }, col);
+                })
+              )),
+              h('tbody', null,
+                qboFiltered.length === 0
+                  ? h('tr', null, h('td', { colSpan: 9, style: { textAlign: 'center',
+                      color: C.ok, padding: 16, fontWeight: 600 } },
+                      'All QBO invoices for this entity are linked to HubSpot deals'
+                    ))
+                  : qboFiltered.map(function(inv, i) {
+                      var ageDays = inv.due_date
+                        ? Math.floor((new Date() - new Date(inv.due_date + 'T00:00:00')) / 86400000)
+                        : null;
+                      var ageColor = !ageDays ? C.mid
+                        : ageDays > 90 ? '#8B0000' : ageDays > 60 ? C.bad
+                        : ageDays > 30 ? '#E67E22' : ageDays > 0 ? C.warn : C.ok;
+                      var bal = inv.balance_due || 0;
+                      var total = inv.amount_total || 0;
+                      var reason = (function() {
+                        if (bal < 10) return { label: 'Rounding / timing', color: C.ok };
+                        if (bal < total * 0.95) return { label: 'Part paid \u2014 reconcile QBO', color: C.warn };
+                        var num = parseInt(inv.doc_number) || 0;
+                        if ((inv.entity_id === 'US' && num < 1100) || (inv.entity_id === 'CA' && num < 2200))
+                          return { label: 'Pre-Invoice Stack', color: C.mid };
+                        if (bal > 100000) return { label: '\u26A0 Large \u2014 add deal to HubSpot', color: C.bad };
+                        if (bal > 20000) return { label: 'Missing HubSpot deal?', color: C.bad };
+                        if (bal > 5000) return { label: 'Investigate deal link', color: C.warn };
+                        return { label: 'Review', color: C.mid };
+                      })();
+                      return h('tr', { key: i, style: {
+                        background: i%2 ? '#FAFAF8' : '#fff',
+                        opacity: bal < 10 ? 0.5 : 1,
+                      }},
+                        h('td', null,
+                          h('span', { style: { fontSize: 10, fontWeight: 700,
+                            color: C.ent[inv.entity_id] || C.mid } }, inv.entity_id)
+                        ),
+                        h('td', { style: { fontWeight: 600, fontSize: 11, fontFamily: 'monospace' } },
+                          inv.doc_number || '\u2014'
+                        ),
+                        h('td', { style: { fontSize: 11, maxWidth: 200, overflow: 'hidden',
+                          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          fontWeight: bal > 20000 ? 600 : 400 } },
+                          inv.customer_name || '\u2014'
+                        ),
+                        h('td', { style: { fontSize: 10, color: C.mid } },
+                          fmtC(total, inv.entity_id)
+                        ),
+                        h('td', { style: { fontWeight: 700, fontSize: 12,
+                          color: bal < 10 ? C.ok : bal < total * 0.95 ? C.warn : C.bad } },
+                          fmtC(bal, inv.entity_id)
+                        ),
+                        h('td', { style: { fontSize: 10, color: C.mid } },
+                          inv.txn_date ? dateFmt(inv.txn_date) : '\u2014'
+                        ),
+                        h('td', { style: { fontSize: 10, color: inv.due_date ? ageColor : C.mid } },
+                          inv.due_date ? dateFmt(inv.due_date) : '\u2014'
+                        ),
+                        h('td', null,
+                          ageDays !== null && ageDays > 0
+                            ? h('span', { style: { background: ageColor, color: '#fff',
+                                borderRadius: 3, padding: '1px 5px',
+                                fontSize: 10, fontWeight: 700 } }, ageDays + 'd')
+                            : ageDays !== null && ageDays <= 0
+                              ? h('span', { style: { color: C.ok, fontSize: 10 } }, 'Current')
+                              : h('span', { style: { color: C.mid, fontSize: 10 } }, '\u2014')
+                        ),
+                        h('td', null,
+                          h('span', { style: { fontSize: 10, fontWeight: 600,
+                            padding: '2px 7px', borderRadius: 4,
+                            background: reason.color + '18', color: reason.color,
+                            whiteSpace: 'nowrap' } }, reason.label)
+                        )
+                      );
+                    })
+              )
+            )
+          ),
+          h('div', { style: { padding: '8px 14px', borderTop: '1px solid #E8E7E3',
+            display: 'flex', justifyContent: 'space-between',
+            background: '#F5F4F0', fontSize: 10 } },
+            h('span', { style: { color: C.mid } },
+              qboUnmatched.filter(function(i) { return (i.balance_due||0) > 100; }).length
+                + ' invoices with material balance \u00B7 '
+                + qboUnmatched.filter(function(i) { return (i.balance_due||0) < 100; }).length
+                + ' near-zero (rounding/timing)'
+            ),
+            h('span', { style: { fontWeight: 700, color: C.bad } },
+              '\u2248 ' + fmt(data.qboUnmatchedTotals?.USD || 0) + ' USD unexplained'
+            )
+          )
+        );
+      })(),
+
       // KPI summary row (always visible)
       h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 8, marginBottom: 16 } },
         h('div', { className: 'card kpi', style: { '--c': C.steel } },
@@ -1217,11 +1372,11 @@ function ARv2Tab({ arData }) {
           h('div', { className: 'kpi-sub' }, 'Invoice # found on deal'),
         ),
         h('div', { className: 'card kpi', style: { '--c': C.warn } },
-          h('div', { className: 'kpi-label' }, 'Unlinked'),
+          h('div', { className: 'kpi-label' }, 'QBO Unmatched'),
           h('div', { className: 'kpi-val', style: { fontSize: 18 } },
-            fmtF(invoicesUnlinked.reduce(function(s, i) { return s + (i.hs_balance_due || i.hs_amount_billed || 0); }, 0))
+            fmt(data.qboUnmatchedTotals?.USD || 0)
           ),
-          h('div', { className: 'kpi-sub' }, invoicesUnlinked.length + ' invoices \u2014 CA/US only'),
+          h('div', { className: 'kpi-sub' }, (data.qboUnmatched||[]).length + ' invoices \u2014 CA/US only'),
         ),
         h('div', { className: 'card kpi', style: { '--c': C.bad } },
           h('div', { className: 'kpi-label' }, 'Needs Invoice'),
