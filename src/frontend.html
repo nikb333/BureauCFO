@@ -234,7 +234,10 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
   const PAY_DELAY=10;
   const paySchedule=(d)=>{
     const t=d.payment_terms||'',prom=d.promised_date,inst=d.install_date;
-    if(t.includes('50/50')) return [{pct:50,date:prom?addDays(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDays(inst,PAY_DELAY):null,label:'50% install'}];
+    if(t.includes('50/50')){
+      if(d.invoice_status==='first_invoice_paid') return [{pct:100,date:inst?addDays(inst,PAY_DELAY):null,label:'Release (deposit paid)'}];
+      return [{pct:50,date:prom?addDays(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDays(inst,PAY_DELAY):null,label:'50% install'}];
+    }
     if(t.includes('Due on Confirmation')) return [{pct:100,date:prom?addDays(prom,PAY_DELAY):null,label:'Due on confirmation'}];
     if(t.includes('Net 30 from install')) return [{pct:100,date:inst?addDays(inst,30):null,label:'Net 30 install'}];
     if(t.includes('Net 30')) return [{pct:100,date:prom?addDays(prom,30):null,label:'Net 30'}];
@@ -544,9 +547,20 @@ function computeDueDate(deal) {
   const install = deal.install_date;
   const addD = (d, n) => { if (!d) return null; const dt = new Date(d+'T00:00:00'); dt.setDate(dt.getDate()+n); return dt.toISOString().slice(0,10); };
   if (t.includes('50') || to.includes('50')) {
+    var status = deal.invoice_status || 'invoices_synced';
+    if (status === 'first_invoice_paid') {
+      return [
+        { pct: 100, label: 'Release (deposit paid \u2713)', date: install ? addD(install, 10) : null, pendingInstall: !install },
+      ];
+    }
+    if (status === 'invoices_synced') {
+      return [
+        { pct: 50, label: 'Deposit (50%)', date: addD(close, 10) },
+        { pct: 50, label: 'Release (50%)', date: install ? addD(install, 10) : null, pendingInstall: !install },
+      ];
+    }
     return [
-      { pct: 50, label: 'Deposit (50%)', date: addD(close, 10) },
-      { pct: 50, label: 'Release (50%)', date: install ? addD(install, 10) : null, pendingInstall: !install },
+      { pct: 100, label: 'Balance due', date: install ? addD(install, 10) : addD(close, 10) },
     ];
   }
   if (t.includes('net 30 from install') || to.includes('net 30 from install')) {
