@@ -1247,7 +1247,7 @@ export default {
         if (entity && entity !== 'ALL') dealsQ += ` WHERE entity_id='${entity}'`;
         dealsQ += ' ORDER BY invoiced_total DESC';
 
-        let invoicesQ = "SELECT * FROM hs_invoices WHERE hs_status = 'open'";
+        let invoicesQ = "SELECT * FROM hs_invoices WHERE hs_status = 'open' AND COALESCE(hs_balance_due, hs_amount_billed) > 0";
         if (entity && entity !== 'ALL') invoicesQ += ` AND entity_id='${entity}'`;
         invoicesQ += ' ORDER BY hs_amount_billed DESC';
 
@@ -1255,10 +1255,11 @@ export default {
         if (entity && entity !== 'ALL') syftQ += ` WHERE entity_id='${entity}'`;
         syftQ += ' ORDER BY total_due DESC';
 
-        const [dealsRes, invoicesRes, syftRes, syncRes, syftSyncRes] = await Promise.all([
+        const [dealsRes, invoicesRes, syftRes, syftReconRes, syncRes, syftSyncRes] = await Promise.all([
           env.DB.prepare(dealsQ).all(),
           env.DB.prepare(invoicesQ).all(),
           env.DB.prepare(syftQ).all(),
+          env.DB.prepare('SELECT * FROM syft_reconciliation').all(),
           env.DB.prepare("SELECT value FROM settings WHERE key='hubspot_ar_last_sync'").first(),
           env.DB.prepare("SELECT value FROM settings WHERE key='syft_customers_last_sync'").first(),
         ]);
@@ -1268,7 +1269,6 @@ export default {
         const syftCustomers = syftRes.results;
 
         // ── Invoice-number exact matching ──
-        // Build lookup: invoice_number → deal from deals.invoice_numbers (comma-separated)
         const invNumToDeal = {};
         for (const deal of deals) {
           if (!deal.invoice_numbers) continue;
@@ -1278,10 +1278,9 @@ export default {
           }
         }
 
-        // Categorise each open invoice
-        const invoicesLinkedToDeal = [];   // invoice number appears in a deal's invoice_numbers
-        const invoicesLinkedNoMatch = [];  // has a deal_id but deal not in our open deals list
-        const invoicesUnlinked = [];       // no deal association at all
+        const invoicesLinkedToDeal = [];
+        const invoicesLinkedNoMatch = [];
+        const invoicesUnlinked = [];
 
         for (const inv of allInvoices) {
           const matchedDeal = invNumToDeal[inv.hs_number?.trim()];
@@ -1294,16 +1293,61 @@ export default {
           }
         }
 
-        // Invoice → deal map for the ageing tab
         const invoicesByDeal = {};
         for (const { invoice, deal } of invoicesLinkedToDeal) {
           if (!invoicesByDeal[deal.deal_id]) invoicesByDeal[deal.deal_id] = [];
           invoicesByDeal[deal.deal_id].push(invoice);
         }
 
-        // Deals with NO open invoice in hs_invoices
-        const dealIdsWithInvoice = new Set(invoicesLinkedToDeal.map(i => i.deal.deal_id));
         const dealsWithoutInvoice = deals.filter(d => !d.invoice_numbers || d.invoice_numbers.trim() === '');
+
+        // ── AR Waterfall: Syft (source of truth) vs HubSpot ──
+        const FX = { US: 1, CA: 0.71, UK: 1.33, AU: 0.68 };
+        const EIDS = ['US', 'CA', 'UK', 'AU'];
+
+        const syftReconByEntity = {};
+        for (const row of syftReconRes.results) {
+          syftReconByEntity[row.entity_id] = row;
+        }
+
+        const hsDealOutstandingByEntity = {};
+        const hsDealInvoicedByEntity = {};
+        const hsDealPaidByEntity = {};
+        for (const eId of EIDS) {
+          const eDeals = deals.filter(d => d.entity_id === eId);
+          hsDealOutstandingByEntity[eId] = eDeals.reduce((s, d) => s + (d.outstanding_total || d.invoiced_total || 0), 0);
+          hsDealInvoicedByEntity[eId] = eDeals.reduce((s, d) => s + (d.invoiced_total || 0), 0);
+          hsDealPaidByEntity[eId] = eDeals.reduce((s, d) => s + (d.paid_total || 0), 0);
+        }
+
+        const arWaterfall = EIDS.map(eId => {
+          const fx = FX[eId] || 1;
+          const syftAR = Math.abs(syftReconByEntity[eId]?.ar_total || 0);
+          const hsInvoiced = hsDealInvoicedByEntity[eId] || 0;
+          const hsPaid = hsDealPaidByEntity[eId] || 0;
+          const hsOutstanding = hsDealOutstandingByEntity[eId] || 0;
+          const gap = syftAR - hsOutstanding;
+          return {
+            entity_id: eId,
+            syft_ar: Math.round(syftAR),
+            hs_invoiced: Math.round(hsInvoiced),
+            hs_paid: Math.round(hsPaid),
+            hs_outstanding: Math.round(hsOutstanding),
+            gap: Math.round(gap),
+            syft_ar_usd: Math.round(syftAR * fx),
+            hs_outstanding_usd: Math.round(hsOutstanding * fx),
+            hs_paid_usd: Math.round(hsPaid * fx),
+            gap_usd: Math.round(gap * fx),
+            syft_as_of: syftReconByEntity[eId]?.updated_at || null,
+          };
+        });
+
+        const arWaterfallTotals = {
+          syft_ar_usd: arWaterfall.reduce((s, r) => s + r.syft_ar_usd, 0),
+          hs_outstanding_usd: arWaterfall.reduce((s, r) => s + r.hs_outstanding_usd, 0),
+          hs_paid_usd: arWaterfall.reduce((s, r) => s + r.hs_paid_usd, 0),
+          gap_usd: arWaterfall.reduce((s, r) => s + r.gap_usd, 0),
+        };
 
         // ── Syft fuzzy name matching (for Syft reconciliation panel) ──
         const STRIP_WORDS = new Set(['ltd','pty','inc','the','limited','llc','plc','group','corp','corporation','co','and','of','for','a','an','services','solutions','company','holdings','enterprises','consulting','international','australia','canada','uk','usa','us']);
@@ -1359,18 +1403,19 @@ export default {
         return json({
           deals,
           invoicesByDeal,
-          // Invoice-level reconciliation (new)
+          arWaterfall,
+          arWaterfallTotals,
           invoicesLinkedToDeal,
           invoicesLinkedNoMatch,
           invoicesUnlinked,
           dealsWithoutInvoice,
-          // Syft reconciliation (existing)
           syftCustomers,
           matched,
           syftOnly,
           hubspotOnly,
           last_sync: syncRes?.value || null,
           syft_last_sync: syftSyncRes?.value || null,
+          auuk_coverage_note: 'AU and UK invoice details require Xero API (not yet connected). AU/UK AR is visible via Syft reconciliation tab.',
         });
       }
 

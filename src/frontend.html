@@ -234,7 +234,10 @@ function ARCollectionPanel({arRates,arHubspotOverflow,arDeals,syftRecon,entities
   const PAY_DELAY=10;
   const paySchedule=(d)=>{
     const t=d.payment_terms||'',prom=d.promised_date,inst=d.install_date;
-    if(t.includes('50/50')) return [{pct:50,date:prom?addDays(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDays(inst,PAY_DELAY):null,label:'50% install'}];
+    if(t.includes('50/50')){
+      if(d.invoice_status==='first_invoice_paid') return [{pct:100,date:inst?addDays(inst,PAY_DELAY):null,label:'Release (deposit paid)'}];
+      return [{pct:50,date:prom?addDays(prom,PAY_DELAY):null,label:'50% confirmation'},{pct:50,date:inst?addDays(inst,PAY_DELAY):null,label:'50% install'}];
+    }
     if(t.includes('Due on Confirmation')) return [{pct:100,date:prom?addDays(prom,PAY_DELAY):null,label:'Due on confirmation'}];
     if(t.includes('Net 30 from install')) return [{pct:100,date:inst?addDays(inst,30):null,label:'Net 30 install'}];
     if(t.includes('Net 30')) return [{pct:100,date:prom?addDays(prom,30):null,label:'Net 30'}];
@@ -544,9 +547,20 @@ function computeDueDate(deal) {
   const install = deal.install_date;
   const addD = (d, n) => { if (!d) return null; const dt = new Date(d+'T00:00:00'); dt.setDate(dt.getDate()+n); return dt.toISOString().slice(0,10); };
   if (t.includes('50') || to.includes('50')) {
+    var status = deal.invoice_status || 'invoices_synced';
+    if (status === 'first_invoice_paid') {
+      return [
+        { pct: 100, label: 'Release (deposit paid \u2713)', date: install ? addD(install, 10) : null, pendingInstall: !install },
+      ];
+    }
+    if (status === 'invoices_synced') {
+      return [
+        { pct: 50, label: 'Deposit (50%)', date: addD(close, 10) },
+        { pct: 50, label: 'Release (50%)', date: install ? addD(install, 10) : null, pendingInstall: !install },
+      ];
+    }
     return [
-      { pct: 50, label: 'Deposit (50%)', date: addD(close, 10) },
-      { pct: 50, label: 'Release (50%)', date: install ? addD(install, 10) : null, pendingInstall: !install },
+      { pct: 100, label: 'Balance due', date: install ? addD(install, 10) : addD(close, 10) },
     ];
   }
   if (t.includes('net 30 from install') || to.includes('net 30 from install')) {
@@ -609,7 +623,8 @@ function ARv2Tab({ arData }) {
   if (!data) return h('div', { className: 'loading' }, 'Loading AR data...');
 
   const { deals, invoicesByDeal, unlinked = [], last_sync, matched = [], syftOnly = [], hubspotOnly = [], syft_last_sync,
-    invoicesLinkedToDeal = [], invoicesLinkedNoMatch = [], invoicesUnlinked = [], dealsWithoutInvoice = [] } = data;
+    invoicesLinkedToDeal = [], invoicesLinkedNoMatch = [], invoicesUnlinked = [], dealsWithoutInvoice = [],
+    arWaterfall = [], arWaterfallTotals = {} } = data;
   const EIDs = ['ALL', 'US', 'CA', 'UK', 'AU'];
 
   const BUCKETS = ['current', '1-30', '31-60', '61-90', '90+', 'no-date'];
@@ -822,8 +837,91 @@ function ARv2Tab({ arData }) {
       )
     ),
 
-    // RECONCILIATION SUB-TAB — Invoice Numbers + Syft Name Match
+    // RECONCILIATION SUB-TAB — Waterfall + Invoice Numbers + Syft Name Match
     arSub === 'recon' && h('div', null,
+      // ── AR Reconciliation Waterfall ──
+      h('div', { className: 'card', style: { marginBottom: 16 } },
+        h('div', { className: 'card-hdr' },
+          h('span', null, 'AR Reconciliation \u2014 Accounting System vs HubSpot'),
+          h('span', { style: { fontSize: 10, color: C.mid } },
+            'Syft = source of truth from Xero/QBO \u00B7 HubSpot = sum of all invoiced deals'
+          )
+        ),
+        h('div', { style: { overflowX: 'auto' } },
+          h('table', null,
+            h('thead', null, h('tr', null,
+              ['Entity', 'Syft AR', 'HS Invoiced', 'HS Collected', 'HS Outstanding', 'Gap vs Syft', 'Gap (USD)', 'Coverage'].map(function(col, ci) {
+                return h('th', { key: ci, style: { fontSize: 10, textAlign: ci >= 5 ? 'right' : 'left' } }, col);
+              })
+            )),
+            h('tbody', null,
+              arWaterfall.map(function(row, i) {
+                var gapPct = row.syft_ar > 0 ? row.hs_outstanding / row.syft_ar : 0;
+                var gapColor = gapPct >= 0.95 ? C.ok : gapPct >= 0.75 ? C.warn : C.bad;
+                var gapAbs = Math.abs(row.gap);
+                var collectedPct = row.hs_invoiced > 0 ? Math.round(row.hs_paid / row.hs_invoiced * 100) : 0;
+                return h('tr', { key: i, style: { background: i%2 ? '#FAFAF8' : '#fff' } },
+                  h('td', null, h('span', { style: { fontWeight: 700, color: C.ent[row.entity_id] } }, row.entity_id)),
+                  h('td', { style: { fontWeight: 700, color: C.steel } }, fmtC(row.syft_ar, row.entity_id)),
+                  h('td', { style: { fontSize: 10, color: C.mid } }, fmtC(row.hs_invoiced, row.entity_id)),
+                  h('td', null,
+                    h('div', null,
+                      h('span', { style: { fontSize: 11, color: C.ok, fontWeight: 500 } }, fmtC(row.hs_paid, row.entity_id)),
+                      row.hs_invoiced > 0 && h('span', { style: { fontSize: 9, color: C.mid, marginLeft: 4 } }, '(' + collectedPct + '%)')
+                    )
+                  ),
+                  h('td', { style: { fontWeight: 700, color: C.bad } }, fmtC(row.hs_outstanding, row.entity_id)),
+                  h('td', { style: { fontWeight: 600, textAlign: 'right', color: gapAbs < 10000 ? C.ok : C.warn } },
+                    gapAbs < 1000
+                      ? h('span', { style: { color: C.ok } }, '\u2713')
+                      : (row.gap > 0 ? '+' : '') + fmtC(row.gap, row.entity_id)
+                  ),
+                  h('td', { style: { textAlign: 'right', fontWeight: 600, fontSize: 11, color: gapAbs < 10000 ? C.ok : C.warn } },
+                    Math.abs(row.gap_usd) < 1000
+                      ? h('span', { style: { color: C.ok } }, '\u2713')
+                      : (row.gap_usd > 0 ? '+' : '') + fmt(row.gap_usd)
+                  ),
+                  h('td', null,
+                    h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' } },
+                      h('div', { style: { width: 60, height: 6, background: '#E8E7E3', borderRadius: 3, overflow: 'hidden' } },
+                        h('div', { style: { width: Math.min(100, Math.round(gapPct * 100)) + '%', height: '100%', background: gapColor, borderRadius: 3 } })
+                      ),
+                      h('span', { style: { fontSize: 10, fontWeight: 600, color: gapColor, minWidth: 32 } },
+                        Math.min(100, Math.round(gapPct * 100)) + '%'
+                      )
+                    )
+                  )
+                );
+              }),
+              h('tr', { style: { borderTop: '2px solid ' + C.steel, background: '#F5F4F0' } },
+                h('td', { style: { fontWeight: 700 } }, 'TOTAL (USD)'),
+                h('td', { style: { fontWeight: 700 } }, fmt(arWaterfallTotals.syft_ar_usd || 0)),
+                h('td', { style: { color: C.mid, fontSize: 10 } }, '\u2014'),
+                h('td', { style: { color: C.ok, fontWeight: 600 } }, fmt(arWaterfallTotals.hs_paid_usd || 0)),
+                h('td', { style: { fontWeight: 700, color: C.bad } }, fmt(arWaterfallTotals.hs_outstanding_usd || 0)),
+                h('td', { colSpan: 2, style: { fontWeight: 700, color: C.warn, textAlign: 'right' } },
+                  '+' + fmt(arWaterfallTotals.gap_usd || 0) + ' unexplained'
+                ),
+                h('td', { style: { textAlign: 'right' } },
+                  (function() {
+                    var pct = arWaterfallTotals.syft_ar_usd > 0 ? Math.round(arWaterfallTotals.hs_outstanding_usd / arWaterfallTotals.syft_ar_usd * 100) : 0;
+                    var col = pct >= 95 ? C.ok : pct >= 75 ? C.warn : C.bad;
+                    return h('span', { style: { fontWeight: 700, color: col } }, pct + '% matched');
+                  })()
+                )
+              )
+            )
+          )
+        ),
+        h('div', { style: { padding: '8px 16px', background: '#FAFAF8', borderTop: '1px solid #E8E7E3', fontSize: 10, color: C.mid } },
+          h('strong', null, 'How to read this: '),
+          'Syft AR = total outstanding in your accounting system (source of truth). HubSpot Deals = sum of all invoiced deals in this dashboard. ',
+          'Gap = amounts in your accounting system not yet matched to an open HubSpot deal \u2014 likely paid deals not yet closed in Xero/QBO, old pre-Invoice Stack invoices, or AU/UK invoices on deals not yet in this dashboard. ',
+          h('strong', null, 'Note: '),
+          'AU & UK are invoiced via Xero. Until Xero API is connected, the HubSpot deal total for AU/UK is the best available proxy and may exceed Syft AR (normal \u2014 deals include future collections).'
+        )
+      ),
+
       // KPI summary row (always visible)
       h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 16 } },
         h('div', { className: 'card kpi', style: { '--c': C.steel } },
@@ -838,8 +936,10 @@ function ARv2Tab({ arData }) {
         ),
         h('div', { className: 'card kpi', style: { '--c': C.warn } },
           h('div', { className: 'kpi-label' }, 'Unlinked'),
-          h('div', { className: 'kpi-val' }, invoicesUnlinked.length),
-          h('div', { className: 'kpi-sub' }, 'Investigate \u2014 no deal'),
+          h('div', { className: 'kpi-val', style: { fontSize: 18 } },
+            fmtF(invoicesUnlinked.reduce(function(s, i) { return s + (i.hs_balance_due || i.hs_amount_billed || 0); }, 0))
+          ),
+          h('div', { className: 'kpi-sub' }, invoicesUnlinked.length + ' invoices \u2014 CA/US only'),
         ),
         h('div', { className: 'card kpi', style: { '--c': C.blue } },
           h('div', { className: 'kpi-label' }, 'Syft Gaps'),
@@ -904,6 +1004,12 @@ function ARv2Tab({ arData }) {
               )
         ),
 
+        // AU/UK coverage warning
+        h('div', { style: { padding: '8px 12px', background: '#FEF3D6', border: '1px solid #F0DDA0', borderRadius: 6, marginBottom: 12, fontSize: 10, color: C.warn } },
+          h('strong', null, '\u26A0 AU & UK invoice coverage: '),
+          'Xero invoices (AU/UK) are not synced as native HubSpot invoice objects. The unlinked list below shows QBO invoices (CA/US) only. For AU/UK unreconciled AR, use the Syft Name Match tab \u2014 clients appearing in Syft with no matching open HubSpot deal represent AU/UK gaps. Full AU/UK invoice-level coverage requires Xero API connection (Option B).'
+        ),
+
         // Section 2: Unlinked Invoices (yellow — investigation queue)
         h('div', { className: 'card', style: { marginBottom: 16 } },
           h('div', { className: 'card-hdr', style: { background: '#FFF8E1', color: C.warn } },
@@ -915,25 +1021,42 @@ function ARv2Tab({ arData }) {
             : h('div', { style: { overflowX: 'auto' } },
                 h('table', null,
                   h('thead', null, h('tr', null,
-                    ['Entity', 'Invoice #', 'Company', 'Amount', 'Due Date', 'Age', 'Currency'].map(function(col, ci) {
+                    ['Entity', 'Invoice #', 'Company', 'Total Billed', 'Balance Due', 'Issued', 'Due Date', 'Age', ''].map(function(col, ci) {
                       return h('th', { key: ci, style: { fontSize: 10 } }, col);
                     })
                   )),
                   h('tbody', null,
                     invoicesUnlinked.map(function(inv, i) {
-                      var age = inv.hs_due_date ? ageDays(inv.hs_due_date) : null;
+                      var ad = inv.hs_due_date ? ageDays(inv.hs_due_date) : null;
+                      var ageColor = !ad ? C.mid : ad > 90 ? '#8B0000' : ad > 60 ? C.bad : ad > 30 ? '#E67E22' : ad > 0 ? C.warn : C.ok;
                       return h('tr', { key: i, style: { background: i%2 ? '#FAFAF8' : '#fff' } },
-                        h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[inv.entity_id] || C.mid } }, inv.entity_id)),
-                        h('td', { style: { fontWeight: 500 } },
+                        h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[inv.entity_id] || C.mid } }, inv.entity_id || '\u2014')),
+                        h('td', null,
                           inv.invoice_url
-                            ? h('a', { href: inv.invoice_url, target: '_blank', style: { color: C.steel, textDecoration: 'none', borderBottom: '1px dotted #C4C3C1' } }, inv.hs_number)
-                            : inv.hs_number
+                            ? h('a', { href: inv.invoice_url, target: '_blank', style: { color: C.blue, fontWeight: 600, fontSize: 11, textDecoration: 'none', borderBottom: '1px dotted #C4C3C1' } }, inv.hs_number)
+                            : h('span', { style: { fontWeight: 600, fontSize: 11 } }, inv.hs_number)
                         ),
-                        h('td', { style: { fontSize: 11, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, inv.company_name || '\u2014'),
-                        h('td', { style: { fontWeight: 600, color: C.bad } }, fmtC(inv.hs_amount_billed, inv.entity_id)),
-                        h('td', { style: { fontSize: 11 } }, dateFmt(inv.hs_due_date)),
-                        h('td', { style: { fontSize: 11, color: age > 0 ? C.bad : C.mid } }, age != null ? (age > 0 ? age + 'd overdue' : Math.abs(age) + 'd left') : '\u2014'),
-                        h('td', { style: { fontSize: 10, color: C.mid } }, inv.hs_currency || '\u2014')
+                        h('td', { style: { fontSize: 11, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                          inv.company_name
+                            ? h('span', { style: { fontWeight: 500 } }, inv.company_name)
+                            : h('span', { style: { color: C.mid, fontStyle: 'italic', fontSize: 10 } }, 'No company linked')
+                        ),
+                        h('td', { style: { fontSize: 11, color: C.mid } }, fmtC(inv.hs_amount_billed, inv.entity_id)),
+                        h('td', { style: { fontWeight: 700, color: C.bad, fontSize: 12 } }, fmtC(inv.hs_balance_due || inv.hs_amount_billed, inv.entity_id)),
+                        h('td', { style: { fontSize: 10, color: C.mid } }, inv.hs_createdate ? dateFmt(inv.hs_createdate) : '\u2014'),
+                        h('td', { style: { fontSize: 10, color: inv.hs_due_date ? ageColor : C.mid } },
+                          inv.hs_due_date ? dateFmt(inv.hs_due_date) : '\u2014'
+                        ),
+                        h('td', null,
+                          ad !== null && ad > 0
+                            ? h('span', { style: { fontSize: 10, fontWeight: 600, color: ageColor } }, ad + 'd overdue')
+                            : ad !== null && ad <= 0
+                              ? h('span', { style: { fontSize: 10, color: C.ok } }, 'Current')
+                              : h('span', { style: { fontSize: 10, color: C.mid } }, '\u2014')
+                        ),
+                        h('td', null,
+                          inv.invoice_url && h('a', { href: inv.invoice_url, target: '_blank', style: { fontSize: 10, color: C.blue } }, '\u2197')
+                        )
                       );
                     })
                   )
