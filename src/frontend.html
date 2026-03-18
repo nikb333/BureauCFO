@@ -540,45 +540,71 @@ function APSpreadGrid({rates,entities,apTotals,onUpdate}){
 }
 
 // ── AR v2 Helpers ──
-function computeDueDate(deal) {
-  const t = (deal.payment_terms || '').toLowerCase();
-  const to = (deal.payment_terms_other || '').toLowerCase();
-  const close = deal.close_date;
-  const install = deal.install_date;
-  const addD = (d, n) => { if (!d) return null; const dt = new Date(d+'T00:00:00'); dt.setDate(dt.getDate()+n); return dt.toISOString().slice(0,10); };
+function computeTranches(deal) {
+  var t = (deal.payment_terms || '').toLowerCase();
+  var to = (deal.payment_terms_other || '').toLowerCase();
+  var status = deal.invoice_status || 'invoices_synced';
+  var close = deal.close_date ? new Date(deal.close_date + 'T00:00:00') : null;
+  var install = deal.install_date ? new Date(deal.install_date + 'T00:00:00') : null;
+  var amt = deal.outstanding_total_inc_tax || deal.invoiced_total_inc_tax || deal.invoiced_total || 0;
+  var addD = function(d, n) { if (!d) return null; return new Date(d.getTime() + n * 86400000); };
+  var toStr = function(d) { return d ? d.toISOString().slice(0, 10) : null; };
+
   if (t.includes('50') || to.includes('50')) {
-    var status = deal.invoice_status || 'invoices_synced';
     if (status === 'first_invoice_paid') {
-      return [
-        { pct: 100, label: 'Release (deposit paid \u2713)', date: install ? addD(install, 10) : null, pendingInstall: !install },
-      ];
+      return [{ label: 'Release (deposit paid \u2713)', pct: 100, amount: amt,
+        dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false }];
     }
     if (status === 'invoices_synced') {
       return [
-        { pct: 50, label: 'Deposit (50%)', date: addD(close, 10) },
-        { pct: 50, label: 'Release (50%)', date: install ? addD(install, 10) : null, pendingInstall: !install },
+        { label: 'Deposit (50%)', pct: 50, amount: amt * 0.5,
+          dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false },
+        { label: 'Release (50%)', pct: 50, amount: amt * 0.5,
+          dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false },
       ];
     }
-    return [
-      { pct: 100, label: 'Balance due', date: install ? addD(install, 10) : addD(close, 10) },
-    ];
+    return [{ label: 'Balance due', pct: 100, amount: amt,
+      dueDate: toStr(install ? addD(install, 10) : addD(close, 10)), pendingInstall: false, isPaid: false }];
   }
-  if (t.includes('net 30 from install') || to.includes('net 30 from install')) {
-    return [{ pct: 100, label: 'Net 30 from install', date: install ? addD(install, 30) : null, pendingInstall: !install }];
+
+  if (t.includes('due on conf') || t.includes('confirmation') || to.includes('due on conf') || to.includes('confirmation')) {
+    return [{ label: 'Due on Conf', pct: 100, amount: amt,
+      dueDate: toStr(close ? addD(close, 3) : null), pendingInstall: false, isPaid: false }];
   }
-  if (t.includes('net 60') || to.includes('net 60')) {
-    return [{ pct: 100, label: 'Net 60', date: addD(close, 60) }];
+
+  if ((t.includes('net 30') && t.includes('install')) || (to.includes('net 30') && to.includes('install'))) {
+    return [{ label: 'Net 30 install', pct: 100, amount: amt,
+      dueDate: toStr(install ? addD(install, 30) : null), pendingInstall: !install, isPaid: false }];
   }
-  if (t.includes('net 30') || to.includes('net 30')) {
-    return [{ pct: 100, label: 'Net 30', date: addD(close, 30) }];
+
+  if (t.includes('net 30') && t.includes('invoice')) {
+    return [{ label: 'Net 30 inv', pct: 100, amount: amt,
+      dueDate: toStr(close ? addD(close, 30) : null), pendingInstall: false, isPaid: false }];
   }
-  if (t.includes('net 14') || t.includes('net 15') || to.includes('net 14') || to.includes('net 15')) {
-    return [{ pct: 100, label: 'Net 14', date: addD(close, 14) }];
+
+  var netMatch = t.match(/net\s*(\d+)/) || to.match(/net\s*(\d+)/);
+  if (netMatch) {
+    var days = parseInt(netMatch[1]);
+    var fromInstall = t.includes('install') || to.includes('install');
+    return [{ label: 'Net ' + days + (fromInstall ? ' install' : ''), pct: 100, amount: amt,
+      dueDate: toStr(fromInstall ? (install ? addD(install, days) : null) : (close ? addD(close, days) : null)),
+      pendingInstall: fromInstall && !install, isPaid: false }];
   }
-  if (t.includes('due on confirmation') || to.includes('due on confirmation')) {
-    return [{ pct: 100, label: 'Due on confirmation', date: addD(close, 10) }];
+
+  if (t.includes('due on conf') || to.includes('due on conf')) {
+    return [{ label: 'Due on Conf', pct: 100, amount: amt,
+      dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false }];
   }
-  return [{ pct: 100, label: t || 'Standard', date: addD(close, 10) }];
+
+  return [{ label: t || 'Standard', pct: 100, amount: amt,
+    dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false }];
+}
+
+// Backward compat wrapper — old code that calls computeDueDate gets tranche format
+function computeDueDate(deal) {
+  return computeTranches(deal).map(function(tr) {
+    return { pct: tr.pct, label: tr.label, date: tr.dueDate, pendingInstall: tr.pendingInstall };
+  });
 }
 
 function ageBucket(dateStr) {
@@ -606,245 +632,441 @@ function ageDays(dateStr) {
 
 // ── AR v2 Tab Component ──
 function ARv2Tab({ arData }) {
-  const [arSub, setArSub] = us('ageing');
-  const [entityFilter, setEntityFilter] = us('ALL');
-  const [expandedDeal, setExpandedDeal] = us(null);
-  const [reconMode, setReconMode] = us('invoices');
-  const [localData, setLocalData] = us(arData);
+  var FX_AR = { US: 1, CA: 0.71, UK: 1.33, AU: 0.68 };
+  var ENT_COLORS = { US: '#3171F1', CA: '#B8860B', UK: '#7B6BB5', AU: '#2D7F5E' };
+  var BUCKETS = ['current', '1-30', '31-60', '61-90', '90+', 'no-date'];
+  var BUCKET_LABELS = { current: 'Current', '1-30': '1\u201330 days', '31-60': '31\u201360 days', '61-90': '61\u201390 days', '90+': '90+ days', 'no-date': 'No Date' };
+  var SORT_OPTIONS = ['Due Date', 'Outstanding', 'Deal Name', 'Install Date', 'Age'];
 
-  ue(() => {
-    fetch('/api/ar-v2' + (entityFilter !== 'ALL' ? '?entity='+entityFilter : ''))
-      .then(r => r.json())
-      .then(d => setLocalData(d))
-      .catch(e => console.error('AR v2 load failed', e));
-  }, [entityFilter]);
+  var _s = us('chasing'); var arSub = _s[0]; var setArSub = _s[1];
+  var _e = us('ALL'); var entityFilter = _e[0]; var setEntityFilter = _e[1];
+  var _rm = us('invoices'); var reconMode = _rm[0]; var setReconMode = _rm[1];
+  var _ld = us(arData); var localData = _ld[0]; var setLocalData = _ld[1];
+  var _ow = us('All'); var ownerFilter = _ow[0]; var setOwnerFilter = _ow[1];
+  var _so = us('Due Date'); var sortBy = _so[0]; var setSortBy = _so[1];
+  var _sd = us('asc'); var sortDir = _sd[0]; var setSortDir = _sd[1];
+  var _od = us(false); var overdueOnly = _od[0]; var setOverdueOnly = _od[1];
+  var _sq = us(''); var searchQ = _sq[0]; var setSearchQ = _sq[1];
 
-  const data = localData;
+  ue(function() {
+    fetch('/api/ar-v2')
+      .then(function(r) { return r.json(); })
+      .then(function(d) { setLocalData(d); })
+      .catch(function(e) { console.error('AR v2 load failed', e); });
+  }, []);
+
+  var data = localData;
   if (!data) return h('div', { className: 'loading' }, 'Loading AR data...');
 
-  const { deals, invoicesByDeal, unlinked = [], last_sync, matched = [], syftOnly = [], hubspotOnly = [], syft_last_sync,
-    invoicesLinkedToDeal = [], invoicesLinkedNoMatch = [], invoicesUnlinked = [], dealsWithoutInvoice = [],
-    arWaterfall = [], arWaterfallTotals = {} } = data;
-  const EIDs = ['ALL', 'US', 'CA', 'UK', 'AU'];
+  var deals = data.deals || [];
+  var invoicesByDeal = data.invoicesByDeal || {};
+  var unlinked = data.unlinked || [];
+  var last_sync = data.last_sync;
+  var matched = data.matched || [];
+  var syftOnly = data.syftOnly || [];
+  var hubspotOnly = data.hubspotOnly || [];
+  var syft_last_sync = data.syft_last_sync;
+  var invoicesLinkedToDeal = data.invoicesLinkedToDeal || [];
+  var invoicesLinkedNoMatch = data.invoicesLinkedNoMatch || [];
+  var invoicesUnlinked = data.invoicesUnlinked || [];
+  var dealsWithoutInvoice = data.dealsWithoutInvoice || [];
+  var arWaterfall = data.arWaterfall || [];
+  var arWaterfallTotals = data.arWaterfallTotals || {};
 
-  const BUCKETS = ['current', '1-30', '31-60', '61-90', '90+', 'no-date'];
-  const BUCKET_LABELS = { current: 'Current', '1-30': '1\u201330 days', '31-60': '31\u201360 days', '61-90': '61\u201390 days', '90+': '90+ days', 'no-date': 'No Date' };
-
-  const dealsWithAge = deals.map(deal => {
-    const tranches = computeDueDate(deal);
-    const fx = { US: 1, CA: 0.71, UK: 1.33, AU: 0.68 }[deal.entity_id] || 1;
-    const datedTranches = tranches.filter(t => t.date);
-    const earliestDue = datedTranches.length ? datedTranches.map(t => t.date).sort()[0] : null;
-    const bucket = ageBucket(earliestDue);
-    const days = earliestDue ? ageDays(earliestDue) : null;
+  // ── Build tranche rows for ALL deals (unfiltered) ──
+  var allTranchesRaw = [];
+  deals.forEach(function(deal) {
+    var trs = computeTranches(deal);
+    var fx = FX_AR[deal.entity_id] || 1;
     var localAmt = deal.outstanding_total_inc_tax || deal.invoiced_total_inc_tax || deal.invoiced_total || 0;
-    const usd = Math.round(localAmt * fx);
-    return { ...deal, tranches, earliestDue, bucket, days, usd, localAmt };
+    trs.forEach(function(tr, ti) {
+      var bucket = ageBucket(tr.dueDate);
+      var days = tr.dueDate ? ageDays(tr.dueDate) : null;
+      allTranchesRaw.push({
+        deal: deal, tranche: tr, trancheIdx: ti, trancheCount: trs.length,
+        bucket: bucket, days: days, fx: fx, localAmt: localAmt,
+        usd: Math.round(tr.amount * fx),
+        owner: deal.owner_name || 'Unassigned',
+      });
+    });
   });
 
-  const bucketTotals = {};
-  BUCKETS.forEach(b => { bucketTotals[b] = { count: 0, usd: 0 }; });
-  dealsWithAge.forEach(d => {
-    if (bucketTotals[d.bucket]) {
-      bucketTotals[d.bucket].count++;
-      bucketTotals[d.bucket].usd += d.usd;
+  // ── Entity-level stats (computed from ALL tranches, before entity filter) ──
+  var entityStats = {};
+  ['ALL', 'US', 'CA', 'UK', 'AU'].forEach(function(eId) {
+    var subset = eId === 'ALL' ? allTranchesRaw : allTranchesRaw.filter(function(r) { return r.deal.entity_id === eId; });
+    var dealIds = {};
+    subset.forEach(function(r) { dealIds[r.deal.deal_id] = true; });
+    var totalLocal = subset.reduce(function(s, r) { return s + r.tranche.amount; }, 0);
+    var totalUsd = subset.reduce(function(s, r) { return s + r.usd; }, 0);
+    entityStats[eId] = { count: Object.keys(dealIds).length, totalLocal: totalLocal, totalUsd: totalUsd };
+  });
+
+  // ── Apply entity filter ──
+  var filteredTranches = entityFilter === 'ALL'
+    ? allTranchesRaw
+    : allTranchesRaw.filter(function(r) { return r.deal.entity_id === entityFilter; });
+
+  // ── Apply search filter ──
+  if (searchQ.trim()) {
+    var sq = searchQ.trim().toLowerCase();
+    filteredTranches = filteredTranches.filter(function(r) {
+      return r.deal.deal_name && r.deal.deal_name.toLowerCase().indexOf(sq) >= 0;
+    });
+  }
+
+  // ── Apply owner filter ──
+  var uniqueOwners = [];
+  var ownerSet = {};
+  filteredTranches.forEach(function(r) {
+    if (!ownerSet[r.owner]) { ownerSet[r.owner] = true; uniqueOwners.push(r.owner); }
+  });
+  uniqueOwners.sort();
+
+  if (ownerFilter !== 'All' && ownerSet[ownerFilter]) {
+    filteredTranches = filteredTranches.filter(function(r) { return r.owner === ownerFilter; });
+  }
+
+  // ── Apply overdue filter ──
+  if (overdueOnly) {
+    filteredTranches = filteredTranches.filter(function(r) {
+      return r.tranche.dueDate && new Date(r.tranche.dueDate + 'T00:00:00') < new Date();
+    });
+  }
+
+  // ── Compute bucket totals from filtered tranches ──
+  var bucketTotals = {};
+  BUCKETS.forEach(function(b) { bucketTotals[b] = { count: 0, usd: 0, local: 0 }; });
+  var totalUSD = 0;
+  var totalLocal = 0;
+  filteredTranches.forEach(function(r) {
+    if (bucketTotals[r.bucket]) {
+      bucketTotals[r.bucket].count++;
+      bucketTotals[r.bucket].usd += r.usd;
+      bucketTotals[r.bucket].local += r.tranche.amount;
     }
+    totalUSD += r.usd;
+    totalLocal += r.tranche.amount;
   });
-  const totalUSD = dealsWithAge.reduce((s, d) => s + d.usd, 0);
-  const unlinkedUSD = unlinked.reduce((s, i) => {
-    const fx = { US: 1, CA: 0.71, UK: 1.33, AU: 0.68 }[i.entity_id] || 1;
-    return s + (i.hs_amount_billed || 0) * fx;
-  }, 0);
 
-  const byOwner = {};
-  dealsWithAge.forEach(d => {
-    const k = d.owner_name || 'Unassigned';
-    if (!byOwner[k]) byOwner[k] = [];
-    byOwner[k].push(d);
+  // ── Sort ──
+  var FAR_FUTURE = '9999-12-31';
+  var sorted = filteredTranches.slice().sort(function(a, b) {
+    var m = sortDir === 'asc' ? 1 : -1;
+    if (sortBy === 'Due Date') {
+      return m * ((a.tranche.dueDate || FAR_FUTURE).localeCompare(b.tranche.dueDate || FAR_FUTURE));
+    }
+    if (sortBy === 'Outstanding') return m * (b.tranche.amount - a.tranche.amount);
+    if (sortBy === 'Deal Name') return m * ((a.deal.deal_name || '').localeCompare(b.deal.deal_name || ''));
+    if (sortBy === 'Install Date') {
+      return m * ((a.deal.install_date || FAR_FUTURE).localeCompare(b.deal.install_date || FAR_FUTURE));
+    }
+    if (sortBy === 'Age') {
+      var dA = a.days === null ? -99999 : a.days;
+      var dB = b.days === null ? -99999 : b.days;
+      return m * (dB - dA);
+    }
+    return 0;
   });
-  const ownersSorted = Object.keys(byOwner).sort((a, b) => {
-    const totA = byOwner[a].reduce((s, d) => s + d.usd, 0);
-    const totB = byOwner[b].reduce((s, d) => s + d.usd, 0);
+
+  // ── Group by owner for display ──
+  var byOwner = {};
+  sorted.forEach(function(r) {
+    if (!byOwner[r.owner]) byOwner[r.owner] = [];
+    byOwner[r.owner].push(r);
+  });
+  var ownersSorted = Object.keys(byOwner).sort(function(a, b) {
+    var totA = byOwner[a].reduce(function(s, r) { return s + r.usd; }, 0);
+    var totB = byOwner[b].reduce(function(s, r) { return s + r.usd; }, 0);
     return totB - totA;
   });
 
-  const fc = (n, eId) => fmtC(n, eId);
+  var fc = function(n, eId) { return fmtC(n, eId); };
+
+  var ageCell = function(dueDate) {
+    if (!dueDate) return h('span', { style: { color: C.mid, fontSize: 10 } }, '\u2014');
+    var days = Math.floor((new Date() - new Date(dueDate + 'T00:00:00')) / 86400000);
+    if (days <= 0) return h('span', { style: { color: C.ok, fontSize: 10, fontWeight: 600 } }, 'Current');
+    var col = days > 90 ? '#8B0000' : days > 60 ? C.bad : days > 30 ? '#E67E22' : C.warn;
+    return h('span', {
+      style: { background: col, color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: 10, fontWeight: 700 }
+    }, days + 'd overdue');
+  };
+
+  var amtColor = function(r) {
+    if (r.tranche.pendingInstall) return { color: C.mid, fontStyle: 'italic', fontWeight: 500 };
+    if (!r.tranche.dueDate) return { color: C.steel, fontWeight: 500 };
+    var d = Math.floor((new Date() - new Date(r.tranche.dueDate + 'T00:00:00')) / 86400000);
+    if (d > 0) return { color: C.bad, fontWeight: 700 };
+    if (d > -14) return { color: '#E67E22', fontWeight: 600 };
+    return { color: C.steel, fontWeight: 500 };
+  };
+
+  var abbrevTerms = function(deal) {
+    var t = deal.payment_terms || '';
+    var to = deal.payment_terms_other || '';
+    var tl = t.toLowerCase();
+    if (tl.includes('50')) return '50/50';
+    if (tl.includes('due on conf') || tl.includes('confirmation')) return 'Due on Conf';
+    if (tl.includes('net 30') && tl.includes('install')) return 'Net 30 install';
+    if (tl.includes('net 30') && tl.includes('invoice')) return 'Net 30 inv';
+    var m = tl.match(/net\s*(\d+)/);
+    if (m) return 'Net ' + m[1];
+    return to || t || '\u2014';
+  };
+
+  var showEntityCol = entityFilter === 'ALL';
+  var colCount = showEntityCol ? 11 : 10;
 
   return h('div', null,
-    // Header controls
-    h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 } },
-      h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
-        EIDs.map(e => h('button', {
-          key: e,
-          className: 'pill' + (entityFilter === e ? ' active' : ''),
-          style: { '--c': e === 'ALL' ? C.steel : C.ent[e] },
-          onClick: () => setEntityFilter(e),
-        }, e === 'ALL' ? 'All Entities' : e)),
-        h('div', { style: { display: 'flex', gap: 6, marginLeft: 8 } },
-          [
-            { id: 'ageing', l: 'Ageing Summary' },
-            { id: 'recon', l: 'Reconciliation (' + (invoicesUnlinked.length + (syftOnly||[]).length + (hubspotOnly||[]).length) + ' gaps)' },
-          ].map(s => h('button', {
-            key: s.id,
-            className: 'pill' + (arSub === s.id ? ' active' : ''),
-            style: { '--c': C.blue },
-            onClick: () => setArSub(s.id),
-          }, s.l))
-        ),
+    // ── Top-level tabs: AR Chasing / Reconciliation ──
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
+      h('div', { style: { display: 'flex', gap: 6 } },
+        [
+          { id: 'chasing', l: 'AR Chasing' },
+          { id: 'recon', l: 'Reconciliation' },
+        ].map(function(s) { return h('button', {
+          key: s.id,
+          className: 'pill' + (arSub === s.id ? ' active' : ''),
+          style: { '--c': C.steel, fontSize: 12, padding: '6px 14px' },
+          onClick: function() { setArSub(s.id); },
+        }, s.l); })
       ),
       last_sync && h('span', { style: { fontSize: 9, color: C.mid } },
         'Last sync: ' + new Date(last_sync + 'Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
       )
     ),
 
-    // AGEING SUMMARY SUB-TAB
-    arSub === 'ageing' && h('div', null,
-      // KPI ageing buckets
-      h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 8, marginBottom: 16 } },
-        h('div', { className: 'card kpi', style: { '--c': C.steel } },
-          h('div', { className: 'kpi-label' },
-            entityFilter === 'ALL' ? 'Total AR (USD)' : 'Total AR (' + (CURR[entityFilter]?.c || entityFilter) + ')'
-          ),
-          h('div', { className: 'kpi-val' },
-            entityFilter === 'ALL'
-              ? fmtF(totalUSD)
-              : fmtC(dealsWithAge.reduce(function(s, d) { return s + (d.localAmt || 0); }, 0), entityFilter)
-          ),
-          entityFilter !== 'ALL' && h('div', { className: 'kpi-sub' },
-            '\u2248 ' + fmtF(totalUSD) + ' USD'
-          ),
-          h('div', { className: 'kpi-sub' }, dealsWithAge.length + ' deals'),
-        ),
-        BUCKETS.filter(b => b !== 'no-date').map(b => h('div', {
-          key: b,
-          className: 'card kpi',
-          style: { '--c': ageBucketColor(b) },
-        },
-          h('div', { className: 'kpi-label' }, BUCKET_LABELS[b]),
-          h('div', { className: 'kpi-val', style: { fontSize: 16 } },
-            entityFilter === 'ALL'
-              ? fmtF(bucketTotals[b].usd)
-              : fmtC(dealsWithAge.filter(function(d) { return d.bucket === b; }).reduce(function(s, d) { return s + (d.localAmt || 0); }, 0), entityFilter)
-          ),
-          entityFilter !== 'ALL' && h('div', { className: 'kpi-sub', style: { fontSize: 9 } },
-            '\u2248 ' + fmtF(bucketTotals[b].usd) + ' USD'
-          ),
-          h('div', { className: 'kpi-sub' }, bucketTotals[b].count + ' deals'),
-        ))
+    // ── AR CHASING VIEW ──
+    arSub === 'chasing' && h('div', null,
+
+      // ── Entity pill tabs with badges ──
+      h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 } },
+        ['ALL', 'US', 'CA', 'UK', 'AU'].map(function(eId) {
+          var st = entityStats[eId] || {};
+          var isActive = entityFilter === eId;
+          var entColor = eId === 'ALL' ? C.steel : ENT_COLORS[eId];
+          var label = eId === 'ALL' ? 'All' : eId;
+          var amtStr = eId === 'ALL'
+            ? fmtF(st.totalUsd || 0)
+            : fmtC(st.totalLocal || 0, eId);
+          return h('button', {
+            key: eId,
+            onClick: function() { setEntityFilter(eId); setOwnerFilter('All'); },
+            style: {
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '6px 12px', borderRadius: 20,
+              border: isActive ? '2px solid ' + entColor : '1px solid #E8E7E3',
+              background: isActive ? entColor + '12' : '#fff',
+              cursor: 'pointer', fontSize: 11, fontWeight: isActive ? 700 : 500,
+              color: isActive ? entColor : C.steel,
+              transition: 'all 0.15s',
+            },
+          },
+            h('span', null, label),
+            h('span', { style: { fontSize: 9, color: C.mid, fontWeight: 400 } },
+              st.count + ' deals \u00b7 ' + amtStr
+            )
+          );
+        })
       ),
 
-      // Deals table grouped by owner
+      // ── KPI bucket strip ──
+      h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 8, marginBottom: 12 } },
+        h('div', { className: 'card kpi', style: { '--c': C.steel } },
+          h('div', { className: 'kpi-label' },
+            entityFilter === 'ALL' ? 'Total Outstanding (USD)' : 'Total Outstanding (' + (CURR[entityFilter] ? CURR[entityFilter].c : entityFilter) + ')'
+          ),
+          h('div', { className: 'kpi-val' },
+            entityFilter === 'ALL' ? fmtF(totalUSD) : fc(totalLocal, entityFilter)
+          ),
+          entityFilter !== 'ALL' && h('div', { className: 'kpi-sub' }, '\u2248 ' + fmtF(totalUSD) + ' USD'),
+          h('div', { className: 'kpi-sub' }, filteredTranches.length + ' tranches')
+        ),
+        BUCKETS.filter(function(b) { return b !== 'no-date'; }).map(function(b) {
+          return h('div', { key: b, className: 'card kpi', style: { '--c': ageBucketColor(b) } },
+            h('div', { className: 'kpi-label' }, BUCKET_LABELS[b]),
+            h('div', { className: 'kpi-val', style: { fontSize: 16 } },
+              entityFilter === 'ALL' ? fmtF(bucketTotals[b].usd) : fc(bucketTotals[b].local, entityFilter)
+            ),
+            entityFilter !== 'ALL' && h('div', { className: 'kpi-sub', style: { fontSize: 9 } },
+              '\u2248 ' + fmtF(bucketTotals[b].usd) + ' USD'
+            ),
+            h('div', { className: 'kpi-sub' }, bucketTotals[b].count + ' tranches')
+          );
+        })
+      ),
+
+      // ── Filter bar ──
+      h('div', { style: { display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' } },
+        // Owner dropdown
+        h('label', { style: { fontSize: 10, color: C.mid, display: 'flex', alignItems: 'center', gap: 4 } },
+          'Owner:',
+          h('select', {
+            value: ownerFilter,
+            onChange: function(e) { setOwnerFilter(e.target.value); },
+            style: { fontSize: 11, padding: '3px 6px', borderRadius: 4, border: '1px solid #E8E7E3' },
+          },
+            h('option', { value: 'All' }, 'All owners'),
+            uniqueOwners.map(function(o) { return h('option', { key: o, value: o }, o); })
+          )
+        ),
+        // Sort dropdown
+        h('label', { style: { fontSize: 10, color: C.mid, display: 'flex', alignItems: 'center', gap: 4 } },
+          'Sort:',
+          h('select', {
+            value: sortBy,
+            onChange: function(e) { setSortBy(e.target.value); },
+            style: { fontSize: 11, padding: '3px 6px', borderRadius: 4, border: '1px solid #E8E7E3' },
+          },
+            SORT_OPTIONS.map(function(o) { return h('option', { key: o, value: o }, o); })
+          )
+        ),
+        // Sort direction toggle
+        h('button', {
+          onClick: function() { setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); },
+          style: { fontSize: 11, padding: '3px 8px', borderRadius: 4, border: '1px solid #E8E7E3', background: '#fff', cursor: 'pointer' },
+        }, sortDir === 'asc' ? '\u2191 Asc' : '\u2193 Desc'),
+        // Overdue only toggle
+        h('button', {
+          onClick: function() { setOverdueOnly(!overdueOnly); },
+          style: {
+            fontSize: 11, padding: '3px 10px', borderRadius: 4, cursor: 'pointer',
+            border: overdueOnly ? '2px solid ' + C.bad : '1px solid #E8E7E3',
+            background: overdueOnly ? C.bad + '15' : '#fff',
+            color: overdueOnly ? C.bad : C.steel, fontWeight: overdueOnly ? 700 : 400,
+          },
+        }, '\u26A0 Overdue only'),
+        // Search
+        h('input', {
+          type: 'text', placeholder: '\uD83D\uDD0D Search deal name...',
+          value: searchQ,
+          onChange: function(e) { setSearchQ(e.target.value); },
+          style: { fontSize: 11, padding: '4px 8px', borderRadius: 4, border: '1px solid #E8E7E3', width: 180 },
+        })
+      ),
+
+      // ── Tranche table ──
       h('div', { className: 'card' },
         h('div', { className: 'card-hdr' },
-          h('span', null, 'AR Ageing \u2014 by Owner & Deal'),
-          h('span', { style: { fontSize: 10, color: C.mid } }, 'Due dates computed from HubSpot payment terms + install date'),
+          h('span', null, 'AR Chasing \u2014 Payment Tranches'),
+          h('span', { style: { fontSize: 10, color: C.mid } },
+            sorted.length + ' tranches from ' + Object.keys(byOwner).length + ' owners'
+          )
         ),
         h('div', { style: { overflowX: 'auto' } },
           h('table', null,
             h('thead', null, h('tr', null,
-              ['Deal', 'Invoice(s)', 'Entity', 'Outstanding', 'Terms', 'Due Date', 'Age', 'Install Date', 'Tickets', ''].map(function(col) {
-                return h('th', { key: col, style: { fontSize: 10 }, title: col === 'Outstanding' ? 'Outstanding balance inc. tax, per HubSpot Invoice Stack' : '' }, col);
-              }
-              )
+              ['Owner', 'Deal', showEntityCol && 'Entity', 'Invoice(s)', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Install Date', 'Terms', ''].filter(Boolean).map(function(col) {
+                return h('th', { key: col, style: { fontSize: 10, cursor: 'default' } }, col);
+              })
             )),
             h('tbody', null,
-              ownersSorted.map(owner => {
-                const ownerDeals = byOwner[owner].sort((a, b) => b.usd - a.usd);
-                const ownerUSD = ownerDeals.reduce((s, d) => s + d.usd, 0);
+              ownersSorted.map(function(owner) {
+                var rows = byOwner[owner];
+                var ownerTotal = rows.reduce(function(s, r) { return s + r.tranche.amount; }, 0);
+                var ownerUsd = rows.reduce(function(s, r) { return s + r.usd; }, 0);
+                var showOwnerHdr = ownerFilter === 'All';
+                var dealsSeen = {};
+
                 return h(React.Fragment, { key: owner },
-                  h('tr', { style: { background: '#F5F4F0' } },
-                    h('td', { colSpan: 10, style: { fontSize: 11, fontWeight: 700, color: C.steel, padding: '6px 10px' } },
-                      owner + ' \u2014 ' + fmtF(ownerUSD) + ' USD (' + ownerDeals.length + ' deal' + (ownerDeals.length !== 1 ? 's' : '') + ')'
+                  // Owner header row
+                  showOwnerHdr && h('tr', { style: { background: '#F0EFE9' } },
+                    h('td', { colSpan: colCount, style: { fontWeight: 700, fontSize: 12, padding: '6px 12px' } },
+                      h('span', null, owner),
+                      h('span', { style: { fontWeight: 400, color: C.mid, fontSize: 10, marginLeft: 8 } },
+                        rows.length + ' tranches \u00b7 ' +
+                        (entityFilter === 'ALL' ? fmtF(ownerUsd) : fc(ownerTotal, entityFilter)) +
+                        ' outstanding'
+                      )
                     )
                   ),
-                  ownerDeals.map(deal => {
-                    const isExpanded = expandedDeal === deal.deal_id;
-                    const multi = deal.tranches.length > 1;
-                    const invList = invoicesByDeal[deal.deal_id] || [];
-                    return h(React.Fragment, { key: deal.deal_id },
-                      h('tr', {
-                        style: {
-                          background: deal.has_open_ticket ? '#FEF3F3' : deal.bucket === 'current' ? '#fff' : deal.bucket === '1-30' ? '#FFFDE7' : '#FFF5F5',
-                          cursor: multi ? 'pointer' : 'default',
-                        },
-                        onClick: () => multi && setExpandedDeal(isExpanded ? null : deal.deal_id),
-                      },
-                        h('td', { style: { fontWeight: 500, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                          multi && h('span', { style: { marginRight: 4, fontSize: 10, color: C.mid } }, isExpanded ? '\u25BE' : '\u25B8'),
-                          deal.hubspot_deal_url
-                            ? h('a', { href: deal.hubspot_deal_url, target: '_blank', style: { color: C.steel, textDecoration: 'none', borderBottom: '1px dotted #C4C3C1' } }, deal.deal_name)
-                            : deal.deal_name,
-                        ),
-                        h('td', { style: { fontSize: 10, color: C.mid, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                          deal.invoice_numbers || '\u2014'
-                        ),
-                        h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[deal.entity_id] } }, deal.entity_id)),
-                        h('td', { style: { fontWeight: 700, color: C.bad } }, fc(deal.outstanding_total_inc_tax || deal.invoiced_total_inc_tax || deal.invoiced_total, deal.entity_id)),
-                        h('td', { style: { fontSize: 10, color: C.mid, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                          deal.payment_terms_other || deal.payment_terms || '\u2014'
-                        ),
-                        h('td', { style: { fontSize: 10 } },
-                          multi
-                            ? h('span', { style: { color: C.mid } }, 'see detail')
-                            : deal.tranches[0]?.pendingInstall
-                              ? h('span', { style: { color: C.warn } }, 'Pending install')
-                              : deal.tranches[0]?.date
-                                ? h('span', { style: { color: ageBucketColor(deal.bucket), fontWeight: 600 } }, dateFmt(deal.tranches[0].date))
-                                : h('span', { style: { color: C.warn } }, 'No close date'),
-                        ),
-                        h('td', null,
-                          multi
-                            ? h('span', { style: { fontSize: 9, color: C.mid } }, '\u2014')
-                            : deal.days !== null && deal.days > 0
-                              ? h('span', { className: 'badge overdue', style: { background: ageBucketColor(deal.bucket) + '22', color: ageBucketColor(deal.bucket) } }, deal.days + 'd')
-                              : deal.days !== null && deal.days <= 0
-                                ? h('span', { className: 'badge paid' }, 'Current')
-                                : h('span', { style: { fontSize: 9, color: C.mid } }, '\u2014')
-                        ),
-                        h('td', { style: { fontSize: 10 } },
-                          deal.install_date ? dateFmt(deal.install_date) : h('span', { style: { color: C.warn, fontSize: 9 } }, 'No date')
-                        ),
-                        h('td', null,
-                          deal.has_open_ticket
-                            ? h('span', {
-                                title: [deal.ticket_subject, deal.ticket_category].filter(Boolean).join(' \u2014 '),
-                                style: { cursor: 'help', fontSize: 13, color: C.bad },
-                              }, '\u26A0')
-                            : h('span', { style: { color: C.warm } }, '\u2014')
-                        ),
-                        h('td', null,
-                          deal.hubspot_deal_url && h('a', { href: deal.hubspot_deal_url, target: '_blank', style: { fontSize: 10, color: C.blue } }, '\u2197')
-                        ),
+                  // Tranche rows
+                  rows.map(function(r, ri) {
+                    var deal = r.deal;
+                    var tr = r.tranche;
+                    var isFirstForDeal = !dealsSeen[deal.deal_id];
+                    dealsSeen[deal.deal_id] = true;
+                    var isSecondTranche = r.trancheCount > 1 && r.trancheIdx > 0;
+                    var bgColor = deal.has_open_ticket ? '#FEF3F3'
+                      : isSecondTranche ? '#FAFAF8'
+                      : r.bucket === 'current' || r.bucket === 'no-date' ? '#fff'
+                      : r.bucket === '1-30' ? '#FFFDE7' : '#FFF5F5';
+                    var borderLeft = r.trancheCount > 1 ? '3px solid #E8E7E3' : 'none';
+                    var ac = amtColor(r);
+                    var nameStr = (deal.deal_name || '').length > 32 ? deal.deal_name.slice(0, 30) + '\u2026' : deal.deal_name;
+
+                    return h('tr', { key: deal.deal_id + '-' + r.trancheIdx, style: { background: bgColor, borderLeft: borderLeft } },
+                      // Owner (show once per owner group — just blank for subsequent)
+                      h('td', { style: { fontSize: 11, color: C.mid, verticalAlign: 'top' } },
+                        !showOwnerHdr ? (isFirstForDeal ? owner : '') : ''
                       ),
-                      // Expanded 50/50 tranche rows
-                      isExpanded && deal.tranches.map((tr, ti) => {
-                        const trAmt = Math.round((deal.outstanding_total_inc_tax || deal.invoiced_total_inc_tax || deal.invoiced_total || 0) * tr.pct / 100);
-                        const trBucket = ageBucket(tr.date);
-                        const trDays = tr.date ? ageDays(tr.date) : null;
-                        const matchedInv = invList[ti] || null;
-                        return h('tr', { key: 'tr-' + ti, style: { background: '#F7F4F0', borderLeft: '3px solid ' + C.blue } },
-                          h('td', { style: { paddingLeft: 24, fontSize: 10, color: C.mid } }, tr.label),
-                          h('td', { style: { fontSize: 10, color: C.mid } }, matchedInv?.hs_number || '\u2014'),
-                          h('td'),
-                          h('td', { style: { fontSize: 11, fontWeight: 600, color: C.bad } }, fc(trAmt, deal.entity_id)),
-                          h('td'),
-                          h('td', { style: { fontSize: 10 } },
-                            tr.pendingInstall
-                              ? h('span', { style: { color: C.warn } }, 'Pending install date')
-                              : tr.date
-                                ? h('span', { style: { color: ageBucketColor(trBucket), fontWeight: 600 } }, dateFmt(tr.date))
-                                : h('span', { style: { color: C.warn } }, 'No date'),
-                          ),
-                          h('td', null,
-                            !tr.pendingInstall && trDays !== null && trDays > 0
-                              ? h('span', { className: 'badge overdue', style: { background: ageBucketColor(trBucket) + '22', color: ageBucketColor(trBucket) } }, trDays + 'd')
-                              : !tr.pendingInstall && trDays !== null
-                                ? h('span', { className: 'badge paid' }, 'Current')
-                                : h('span', { style: { fontSize: 9, color: C.warm } }, '\u2014')
-                          ),
-                          h('td'), h('td'), h('td'),
-                        );
-                      })
+                      // Deal name
+                      h('td', { style: { fontWeight: isFirstForDeal ? 500 : 400, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: isFirstForDeal ? 11 : 10, color: isFirstForDeal ? C.steel : C.mid } },
+                        isFirstForDeal
+                          ? (deal.hubspot_deal_url
+                              ? h('a', { href: deal.hubspot_deal_url, target: '_blank', style: { color: C.steel, textDecoration: 'none', borderBottom: '1px dotted #C4C3C1' } },
+                                  nameStr, ' ', h('span', { style: { fontSize: 9, color: C.blue } }, '\u2197'))
+                              : nameStr)
+                          : h('span', { style: { paddingLeft: 12 } }, '\u2514 ' + tr.label)
+                      ),
+                      // Entity (conditional)
+                      showEntityCol && h('td', null,
+                        isFirstForDeal && h('span', { style: {
+                          fontSize: 9, fontWeight: 700, color: '#fff', background: ENT_COLORS[deal.entity_id] || C.mid,
+                          borderRadius: 3, padding: '1px 5px', display: 'inline-block',
+                        } }, deal.entity_id)
+                      ),
+                      // Invoice(s)
+                      h('td', { style: { fontSize: 10, color: C.mid, maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                        isFirstForDeal ? (deal.invoice_numbers || '\u2014') : ''
+                      ),
+                      // Tranche label
+                      h('td', { style: { fontSize: 10, color: r.trancheCount > 1 ? C.blue : C.mid, fontWeight: r.trancheCount > 1 ? 600 : 400 } },
+                        tr.label
+                      ),
+                      // Next Due
+                      h('td', { style: { fontSize: 10 } },
+                        tr.pendingInstall
+                          ? h('span', { style: { color: C.warn, fontSize: 10 } }, 'Pending install')
+                          : tr.dueDate
+                            ? h('span', { style: { color: ageBucketColor(r.bucket), fontWeight: 600 } }, dateFmt(tr.dueDate))
+                            : h('span', { style: { color: C.warn } }, 'No date')
+                      ),
+                      // Age
+                      h('td', null, ageCell(tr.dueDate)),
+                      // Outstanding
+                      h('td', null,
+                        h('div', null,
+                          h('span', { style: ac }, fc(tr.amount, deal.entity_id)),
+                          entityFilter === 'ALL' && h('div', { style: { fontSize: 9, color: C.mid } },
+                            '\u2248 ' + fmt(r.usd) + ' USD'
+                          )
+                        )
+                      ),
+                      // Install Date
+                      h('td', { style: { fontSize: 10 } },
+                        isFirstForDeal
+                          ? (deal.install_date
+                              ? dateFmt(deal.install_date)
+                              : (tr.pendingInstall
+                                  ? h('span', { style: { color: C.warn, fontSize: 10 } }, 'Pending install date')
+                                  : h('span', { style: { color: C.mid, fontSize: 9 } }, 'No date')))
+                          : ''
+                      ),
+                      // Terms
+                      h('td', { style: { fontSize: 10, color: C.mid } },
+                        isFirstForDeal ? abbrevTerms(deal) : ''
+                      ),
+                      // Ticket icon
+                      h('td', null,
+                        isFirstForDeal && deal.has_open_ticket
+                          ? h('span', {
+                              title: [deal.ticket_subject, deal.ticket_category].filter(Boolean).join(' \u2014 '),
+                              style: { cursor: 'help', fontSize: 13, color: C.bad },
+                            }, '\uD83C\uDFAB')
+                          : null
+                      )
                     );
                   })
                 );
