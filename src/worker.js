@@ -1303,7 +1303,7 @@ export default {
 
         // Deals with NO open invoice in hs_invoices
         const dealIdsWithInvoice = new Set(invoicesLinkedToDeal.map(i => i.deal.deal_id));
-        const dealsWithoutInvoice = deals.filter(d => !dealIdsWithInvoice.has(d.deal_id));
+        const dealsWithoutInvoice = deals.filter(d => !d.invoice_numbers || d.invoice_numbers.trim() === '');
 
         // ── Syft fuzzy name matching (for Syft reconciliation panel) ──
         const STRIP_WORDS = new Set(['ltd','pty','inc','the','limited','llc','plc','group','corp','corporation','co','and','of','for','a','an','services','solutions','company','holdings','enterprises','consulting','international','australia','canada','uk','usa','us']);
