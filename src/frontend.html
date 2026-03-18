@@ -875,7 +875,7 @@ function ARv2Tab({ arData }) {
 
   var showEntityCol = entityFilter === 'ALL';
   var showOwnerCol = !groupByOwner;
-  var colCount = 11 + (showEntityCol ? 1 : 0) + (showOwnerCol ? 1 : 0);
+  var colCount = 12 + (showEntityCol ? 1 : 0) + (showOwnerCol ? 1 : 0);
 
   return h('div', null,
     // ── Top-level tabs: AR Chasing / Reconciliation ──
@@ -1010,9 +1010,9 @@ function ARv2Tab({ arData }) {
         h('div', { style: { overflowX: 'auto' } },
           h('table', null,
             h('thead', null, h('tr', null,
-              [showOwnerCol && 'Owner', 'Deal', showEntityCol && 'Entity', 'Invoice(s)', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Promised Date', 'Install Date', 'Status', 'Terms', ''].filter(Boolean).map(function(col) {
-                var sortKey = col === 'Deal' ? 'Deal Name' : col === 'Next Due' ? 'Due Date' : col === 'Promised Date' ? 'Promised Date' : col;
-                var isSortable = ['Owner', 'Deal', 'Entity', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Promised Date', 'Install Date', 'Status', 'Terms'].indexOf(col) >= 0;
+              [showOwnerCol && 'Owner', 'Deal', showEntityCol && 'Entity', 'Invoice(s)', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Promised Date', 'Install Date', 'Status', 'Terms', 'Due Date', ''].filter(Boolean).map(function(col) {
+                var sortKey = col === 'Deal' ? 'Deal Name' : col === 'Next Due' ? 'Due Date' : col;
+                var isSortable = ['Owner', 'Deal', 'Entity', 'Tranche', 'Next Due', 'Age', 'Outstanding', 'Promised Date', 'Install Date', 'Status', 'Terms', 'Due Date'].indexOf(col) >= 0;
                 var isActive = sortBy === sortKey || sortBy === col;
                 var arrow = isActive ? (sortDir === 'asc' ? ' \u25B2' : ' \u25BC') : '';
                 return h('th', {
@@ -1159,6 +1159,12 @@ function ARv2Tab({ arData }) {
                       // Terms
                       h('td', { style: { fontSize: 10, color: C.mid } },
                         isFirstForDeal ? abbrevTerms(deal) : ''
+                      ),
+                      // Due Date (tranche-level computed date)
+                      h('td', { style: { fontSize: 10, whiteSpace: 'nowrap' } },
+                        tr.dueDate
+                          ? h('span', { style: { color: ageBucketColor(r.bucket), fontWeight: 500 } }, dateFmt(tr.dueDate))
+                          : h('span', { style: { color: C.mid, fontSize: 9 } }, '\u2014')
                       ),
                       // Ticket icon
                       h('td', null,
