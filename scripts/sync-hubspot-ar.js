@@ -220,6 +220,25 @@ async function main() {
     const outstandingTotalIncTax = Math.max(0, invoicedTotalIncTax - paidTotal);
     const isClosedWon = dp.hs_is_closed_won === 'true' ? 1 : 0;
 
+    // Compute invoice_coverage_flag for 50/50 deals
+    const dealAmt = parseFloat(dp.amount) || 0;
+    const terms = (dp.payment_terms || '').toLowerCase();
+    const termsOther = (dp.payment_terms_if_different_than_standard_payment_terms || '').toLowerCase();
+    const is5050 = terms.includes('50') || termsOther.includes('50');
+    let invoiceCoverageFlag = null;
+    if (is5050 && dealAmt > 0 && invoicedTotal > 0) {
+      const ratio = invoicedTotal / dealAmt;
+      if (ratio >= 0.99 && ratio <= 1.10) {
+        invoiceCoverageFlag = null; // Full deal invoiced
+      } else if (ratio >= 0.40 && ratio <= 0.60) {
+        invoiceCoverageFlag = 'partial'; // Only first invoice raised
+      } else if (ratio > 1.10) {
+        invoiceCoverageFlag = 'over_invoiced';
+      } else {
+        invoiceCoverageFlag = 'discrepancy';
+      }
+    }
+
     // Skip deals with no invoice numbers (not yet invoiced)
     if (!invoiceNumbers.trim()) continue;
 
@@ -228,7 +247,7 @@ async function main() {
     const firstTicket = dealTicketIds.length > 0 ? ticketDetails[dealTicketIds[0]] : null;
     const dealUrl = `https://app.hubspot.com/contacts/${ACCOUNT_ID}/record/0-3/${dealId}`;
 
-    sql += `INSERT OR REPLACE INTO hs_ar_deals (deal_id,deal_name,owner_id,owner_name,entity_id,currency,close_date,payment_terms,payment_terms_other,install_date,deal_amount,invoiced_total,invoice_numbers,invoice_status,paid_total,outstanding_total,invoiced_total_inc_tax,outstanding_total_inc_tax,is_closed_won,has_open_ticket,ticket_subject,ticket_status,ticket_category,hubspot_deal_url) VALUES (${esc(dealId)},${esc((dp.dealname || '').replace(/'/g, "''"))},${esc(ownerId)},${esc(ownerName)},${esc(entityId)},${esc(currency)},${esc(dp.closedate?.slice(0, 10))},${esc(dp.payment_terms || '')},${esc(dp['payment_terms_if_different_than_standard_payment_terms'] || '')},${esc(installDate?.slice(0, 10))},${escNum(dp.amount)},${escNum(invoicedTotal)},${esc(invoiceNumbers.replace(/'/g, "''"))},${esc(invoiceStatus)},${escNum(paidTotal)},${escNum(outstandingTotal)},${escNum(invoicedTotalIncTax)},${escNum(outstandingTotalIncTax)},${isClosedWon},${hasTicket},${esc(firstTicket?.subject)},${esc(firstTicket?.status)},${esc(firstTicket?.category)},${esc(dealUrl)});\n`;
+    sql += `INSERT OR REPLACE INTO hs_ar_deals (deal_id,deal_name,owner_id,owner_name,entity_id,currency,close_date,payment_terms,payment_terms_other,install_date,deal_amount,invoiced_total,invoice_numbers,invoice_status,paid_total,outstanding_total,invoiced_total_inc_tax,outstanding_total_inc_tax,is_closed_won,has_open_ticket,ticket_subject,ticket_status,ticket_category,hubspot_deal_url,invoice_coverage_flag) VALUES (${esc(dealId)},${esc((dp.dealname || '').replace(/'/g, "''"))},${esc(ownerId)},${esc(ownerName)},${esc(entityId)},${esc(currency)},${esc(dp.closedate?.slice(0, 10))},${esc(dp.payment_terms || '')},${esc(dp['payment_terms_if_different_than_standard_payment_terms'] || '')},${esc(installDate?.slice(0, 10))},${escNum(dp.amount)},${escNum(invoicedTotal)},${esc(invoiceNumbers.replace(/'/g, "''"))},${esc(invoiceStatus)},${escNum(paidTotal)},${escNum(outstandingTotal)},${escNum(invoicedTotalIncTax)},${escNum(outstandingTotalIncTax)},${isClosedWon},${hasTicket},${esc(firstTicket?.subject)},${esc(firstTicket?.status)},${esc(firstTicket?.category)},${esc(dealUrl)},${esc(invoiceCoverageFlag)});\n`;
     dealCount++;
   }
 

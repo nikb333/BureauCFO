@@ -554,18 +554,41 @@ function computeTranches(deal) {
   if (t.includes('50') || to.includes('50')) {
     var paidTotal = deal.paid_total || 0;
     var depositPaid = status === 'first_invoice_paid' || paidTotal > 0;
+    var coverageFlag = deal.invoice_coverage_flag;
+
+    // SCENARIO A: Deposit already collected
     if (depositPaid) {
-      // Deposit collected (either first invoice paid, or partial payment on single invoice).
-      // outstanding_total_inc_tax is already net — show as single release tranche.
       return [{ label: 'Release (deposit paid \u2713)', pct: 100, amount: amt,
-        dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false }];
+        dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false, isEstimate: false }];
     }
-    // Nothing paid yet — show full 50/50 split
+
+    // SCENARIO B: Only first invoice raised, second not yet created
+    if (coverageFlag === 'partial') {
+      var dealAmt = deal.deal_amount || 0;
+      var invoicedExTax = deal.invoiced_total || 0;
+      var effectiveTaxRate = invoicedExTax > 0 && amt > 0 ? amt / invoicedExTax : 1;
+      var estimatedFullDealIncTax = dealAmt * effectiveTaxRate;
+      var estimatedSecondInvoice = Math.max(0, estimatedFullDealIncTax - amt);
+      return [
+        { label: 'Deposit (invoice sent)', pct: 50, amount: amt,
+          dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false, isEstimate: false },
+        { label: 'Release (not yet invoiced)', pct: 50, amount: estimatedSecondInvoice,
+          dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false, isEstimate: true },
+      ];
+    }
+
+    // SCENARIO C: Discrepancy — invoice amount doesn't match deal
+    if (coverageFlag === 'discrepancy' || coverageFlag === 'over_invoiced') {
+      return [{ label: 'Balance due (' + (coverageFlag === 'over_invoiced' ? '\u26A0 over-invoiced' : '\u26A0 amount mismatch') + ')', pct: 100, amount: amt,
+        dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false, isEstimate: false, hasFlag: true }];
+    }
+
+    // SCENARIO D: Normal — both invoices created (full deal invoiced)
     return [
       { label: 'Deposit (50%)', pct: 50, amount: amt * 0.5,
-        dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false },
+        dueDate: toStr(close ? addD(close, 10) : null), pendingInstall: false, isPaid: false, isEstimate: false },
       { label: 'Release (50%)', pct: 50, amount: amt * 0.5,
-        dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false },
+        dueDate: toStr(install ? addD(install, 0) : null), pendingInstall: !install, isPaid: false, isEstimate: false },
     ];
   }
 
@@ -694,14 +717,15 @@ function ARv2Tab({ arData }) {
     });
   });
 
-  // ── Entity-level stats (computed from ALL tranches, before entity filter) ──
+  // ── Entity-level stats (computed from ALL tranches, before entity filter, excluding estimates) ──
   var entityStats = {};
   ['ALL', 'US', 'CA', 'UK', 'AU'].forEach(function(eId) {
     var subset = eId === 'ALL' ? allTranchesRaw : allTranchesRaw.filter(function(r) { return r.deal.entity_id === eId; });
+    var billable = subset.filter(function(r) { return !r.tranche.isEstimate; });
     var dealIds = {};
-    subset.forEach(function(r) { dealIds[r.deal.deal_id] = true; });
-    var totalLocal = subset.reduce(function(s, r) { return s + r.tranche.amount; }, 0);
-    var totalUsd = subset.reduce(function(s, r) { return s + r.usd; }, 0);
+    billable.forEach(function(r) { dealIds[r.deal.deal_id] = true; });
+    var totalLocal = billable.reduce(function(s, r) { return s + r.tranche.amount; }, 0);
+    var totalUsd = billable.reduce(function(s, r) { return s + r.usd; }, 0);
     entityStats[eId] = { count: Object.keys(dealIds).length, totalLocal: totalLocal, totalUsd: totalUsd };
   });
 
@@ -737,12 +761,13 @@ function ARv2Tab({ arData }) {
     });
   }
 
-  // ── Compute bucket totals from filtered tranches ──
+  // ── Compute bucket totals from filtered tranches (excluding estimates) ──
   var bucketTotals = {};
   BUCKETS.forEach(function(b) { bucketTotals[b] = { count: 0, usd: 0, local: 0 }; });
   var totalUSD = 0;
   var totalLocal = 0;
   filteredTranches.forEach(function(r) {
+    if (r.tranche.isEstimate) return; // exclude estimates from totals
     if (bucketTotals[r.bucket]) {
       bucketTotals[r.bucket].count++;
       bucketTotals[r.bucket].usd += r.usd;
@@ -991,7 +1016,9 @@ function ARv2Tab({ arData }) {
                     var isFirstForDeal = !dealsSeen[deal.deal_id];
                     dealsSeen[deal.deal_id] = true;
                     var isSecondTranche = r.trancheCount > 1 && r.trancheIdx > 0;
-                    var bgColor = deal.has_open_ticket ? '#FEF3F3'
+                    var isEstimateRow = tr.isEstimate === true;
+                    var bgColor = isEstimateRow ? '#F8F7F4'
+                      : deal.has_open_ticket ? '#FEF3F3'
                       : isSecondTranche ? '#FAFAF8'
                       : r.bucket === 'current' || r.bucket === 'no-date' ? '#fff'
                       : r.bucket === '1-30' ? '#FFFDE7' : '#FFF5F5';
@@ -999,7 +1026,7 @@ function ARv2Tab({ arData }) {
                     var ac = amtColor(r);
                     var nameStr = (deal.deal_name || '').length > 32 ? deal.deal_name.slice(0, 30) + '\u2026' : deal.deal_name;
 
-                    return h('tr', { key: deal.deal_id + '-' + r.trancheIdx, style: { background: bgColor, borderLeft: borderLeft } },
+                    return h('tr', { key: deal.deal_id + '-' + r.trancheIdx, style: { background: bgColor, borderLeft: borderLeft, opacity: isEstimateRow ? 0.7 : 1 } },
                       // Owner (show once per owner group — just blank for subsequent)
                       h('td', { style: { fontSize: 11, color: C.mid, verticalAlign: 'top' } },
                         !showOwnerHdr ? (isFirstForDeal ? owner : '') : ''
@@ -1025,27 +1052,39 @@ function ARv2Tab({ arData }) {
                         isFirstForDeal ? (deal.invoice_numbers || '\u2014') : ''
                       ),
                       // Tranche label
-                      h('td', { style: { fontSize: 10, color: r.trancheCount > 1 ? C.blue : C.mid, fontWeight: r.trancheCount > 1 ? 600 : 400 } },
+                      h('td', { style: { fontSize: 10, color: isEstimateRow ? C.mid : r.trancheCount > 1 ? C.blue : C.mid, fontWeight: r.trancheCount > 1 ? 600 : 400, fontStyle: isEstimateRow ? 'italic' : 'normal' } },
                         tr.label
                       ),
                       // Next Due
                       h('td', { style: { fontSize: 10 } },
-                        tr.pendingInstall
-                          ? h('span', { style: { color: C.warn, fontSize: 10 } }, 'Pending install')
-                          : tr.dueDate
-                            ? h('span', { style: { color: ageBucketColor(r.bucket), fontWeight: 600 } }, dateFmt(tr.dueDate))
-                            : h('span', { style: { color: C.warn } }, 'No date')
+                        isEstimateRow
+                          ? h('span', { style: { color: C.mid, fontStyle: 'italic' } }, 'Pending invoice')
+                          : tr.pendingInstall
+                            ? h('span', { style: { color: C.warn, fontSize: 10 } }, 'Pending install')
+                            : tr.dueDate
+                              ? h('span', { style: { color: ageBucketColor(r.bucket), fontWeight: 600 } }, dateFmt(tr.dueDate))
+                              : h('span', { style: { color: C.warn } }, 'No date')
                       ),
                       // Age
-                      h('td', null, ageCell(tr.dueDate)),
+                      h('td', null, isEstimateRow ? h('span', { style: { color: C.mid, fontSize: 10 } }, '\u2014') : ageCell(tr.dueDate)),
                       // Outstanding
                       h('td', null,
-                        h('div', null,
-                          h('span', { style: ac }, fc(tr.amount, deal.entity_id)),
-                          entityFilter === 'ALL' && h('div', { style: { fontSize: 9, color: C.mid } },
-                            '\u2248 ' + fmt(r.usd) + ' USD'
-                          )
-                        )
+                        isEstimateRow
+                          ? h('div', null,
+                              h('span', { style: { color: C.mid, fontStyle: 'italic', fontSize: 11 } }, '\u2248 ' + fc(tr.amount, deal.entity_id)),
+                              h('div', { style: { fontSize: 9, color: C.mid } }, 'not yet invoiced')
+                            )
+                          : tr.hasFlag
+                            ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                                h('span', { style: Object.assign({}, ac, { color: C.warn }) }, fc(tr.amount, deal.entity_id)),
+                                h('span', { title: 'Invoice amount does not match deal value \u2014 investigate', style: { cursor: 'help', fontSize: 11 } }, '\u26A0')
+                              )
+                            : h('div', null,
+                                h('span', { style: ac }, fc(tr.amount, deal.entity_id)),
+                                entityFilter === 'ALL' && h('div', { style: { fontSize: 9, color: C.mid } },
+                                  '\u2248 ' + fmt(r.usd) + ' USD'
+                                )
+                              )
                       ),
                       // Install Date
                       h('td', { style: { fontSize: 10 } },
@@ -1278,6 +1317,51 @@ function ARv2Tab({ arData }) {
               var fx = { US: 1, CA: 0.71, UK: 1.33, AU: 0.68 }[d.entity_id] || 1;
               return s + (d.deal_amount || 0) * fx;
             }, 0)) + ' USD at risk'
+          )
+        )
+      ),
+
+      // 50/50 Deals — Partial Invoicing
+      (data.partialInvoiceDeals||[]).length > 0 && h('div', { className: 'card', style: { marginBottom: 16 } },
+        h('div', { className: 'card-hdr', style: { background: '#FEF3D6', color: C.warn } },
+          h('span', null, '50/50 Deals \u2014 Second Invoice Not Yet Raised'),
+          h('span', { style: { fontWeight: 600 } }, (data.partialInvoiceDeals||[]).length + ' deals')
+        ),
+        h('div', { style: { padding: '6px 14px', fontSize: 10, color: C.mid, background: '#FAFAF8', borderBottom: '1px solid #E8E7E3' } },
+          'These are 50/50 payment term deals where only the first invoice has been raised. ',
+          'The first invoice is correctly shown in AR Chasing as "Deposit (invoice sent)". ',
+          'The release invoice has not yet been created \u2014 it should be raised once the install/delivery condition is met.'
+        ),
+        h('table', null,
+          h('thead', null, h('tr', null,
+            ['Entity', 'Deal', 'Owner', 'Invoice Raised', 'Est. Release Due', 'Terms'].map(function(col, i) {
+              return h('th', { key: i, style: { fontSize: 10 } }, col);
+            })
+          )),
+          h('tbody', null,
+            (data.partialInvoiceDeals || []).map(function(deal, i) {
+              var invoicedIncTax = deal.invoiced_total_inc_tax || deal.invoiced_total || 0;
+              var effectiveTax = deal.invoiced_total > 0 ? invoicedIncTax / deal.invoiced_total : 1;
+              var estimatedRelease = Math.max(0, (deal.deal_amount || 0) * effectiveTax - invoicedIncTax);
+              return h('tr', { key: i, style: { background: i%2 ? '#FAFAF8' : '#fff' } },
+                h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[deal.entity_id] } }, deal.entity_id)),
+                h('td', null,
+                  deal.hubspot_deal_url
+                    ? h('a', { href: deal.hubspot_deal_url, target: '_blank',
+                        style: { color: C.steel, textDecoration: 'none', borderBottom: '1px dotted #C4C3C1', fontSize: 11 } },
+                        (deal.deal_name || '').slice(0, 38))
+                    : h('span', { style: { fontSize: 11 } }, (deal.deal_name || '').slice(0, 38))
+                ),
+                h('td', { style: { fontSize: 10, color: C.mid } }, deal.owner_name || '\u2014'),
+                h('td', { style: { fontWeight: 600, color: C.bad } }, fmtC(invoicedIncTax, deal.entity_id)),
+                h('td', { style: { color: C.mid, fontStyle: 'italic', fontSize: 11 } },
+                  estimatedRelease > 0 ? '\u2248 ' + fmtC(estimatedRelease, deal.entity_id) : '\u2014'
+                ),
+                h('td', { style: { fontSize: 10, color: C.mid } },
+                  deal.payment_terms_other || deal.payment_terms || '\u2014'
+                )
+              );
+            })
           )
         )
       ),

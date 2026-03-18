@@ -1442,6 +1442,10 @@ export default {
 
         const uninvoicedDeals = uninvoicedRes.results || [];
 
+        // 50/50 deals with partial invoicing or discrepancies
+        const partialInvoiceDeals = deals.filter(d => d.invoice_coverage_flag === 'partial');
+        const discrepancyDeals = deals.filter(d => d.invoice_coverage_flag === 'discrepancy' || d.invoice_coverage_flag === 'over_invoiced');
+
         return json({
           deals,
           invoicesByDeal,
@@ -1452,6 +1456,8 @@ export default {
           invoicesUnlinked,
           dealsWithoutInvoice,
           uninvoicedDeals,
+          partialInvoiceDeals,
+          discrepancyDeals,
           syftCustomers,
           matched,
           syftOnly,
