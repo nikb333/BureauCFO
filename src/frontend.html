@@ -536,6 +536,350 @@ function APSpreadGrid({rates,entities,apTotals,onUpdate}){
   );
 }
 
+// ── AR v2 Helpers ──
+function computeDueDate(deal) {
+  const t = (deal.payment_terms || '').toLowerCase();
+  const to = (deal.payment_terms_other || '').toLowerCase();
+  const close = deal.close_date;
+  const install = deal.install_date;
+  const addD = (d, n) => { if (!d) return null; const dt = new Date(d+'T00:00:00'); dt.setDate(dt.getDate()+n); return dt.toISOString().slice(0,10); };
+  if (t.includes('50') || to.includes('50')) {
+    return [
+      { pct: 50, label: 'Deposit (50%)', date: addD(close, 10) },
+      { pct: 50, label: 'Release (50%)', date: install ? addD(install, 10) : null, pendingInstall: !install },
+    ];
+  }
+  if (t.includes('net 30 from install') || to.includes('net 30 from install')) {
+    return [{ pct: 100, label: 'Net 30 from install', date: install ? addD(install, 30) : null, pendingInstall: !install }];
+  }
+  if (t.includes('net 60') || to.includes('net 60')) {
+    return [{ pct: 100, label: 'Net 60', date: addD(close, 60) }];
+  }
+  if (t.includes('net 30') || to.includes('net 30')) {
+    return [{ pct: 100, label: 'Net 30', date: addD(close, 30) }];
+  }
+  if (t.includes('net 14') || t.includes('net 15') || to.includes('net 14') || to.includes('net 15')) {
+    return [{ pct: 100, label: 'Net 14', date: addD(close, 14) }];
+  }
+  if (t.includes('due on confirmation') || to.includes('due on confirmation')) {
+    return [{ pct: 100, label: 'Due on confirmation', date: addD(close, 10) }];
+  }
+  return [{ pct: 100, label: t || 'Standard', date: addD(close, 10) }];
+}
+
+function ageBucket(dateStr) {
+  if (!dateStr) return 'no-date';
+  const today = new Date(); today.setHours(0,0,0,0);
+  const due = new Date(dateStr+'T00:00:00');
+  const days = Math.floor((today - due) / 86400000);
+  if (days <= 0) return 'current';
+  if (days <= 30) return '1-30';
+  if (days <= 60) return '31-60';
+  if (days <= 90) return '61-90';
+  return '90+';
+}
+
+function ageBucketColor(bucket) {
+  return { current: C.ok, '1-30': C.warn, '31-60': '#E67E22', '61-90': C.bad, '90+': '#8B0000', 'no-date': C.mid }[bucket] || C.mid;
+}
+
+function ageDays(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const due = new Date(dateStr+'T00:00:00');
+  return Math.floor((today - due) / 86400000);
+}
+
+// ── AR v2 Tab Component ──
+function ARv2Tab({ arData }) {
+  const [arSub, setArSub] = us('ageing');
+  const [entityFilter, setEntityFilter] = us('ALL');
+  const [expandedDeal, setExpandedDeal] = us(null);
+  const [localData, setLocalData] = us(arData);
+
+  ue(() => {
+    fetch('/api/ar-v2' + (entityFilter !== 'ALL' ? '?entity='+entityFilter : ''))
+      .then(r => r.json())
+      .then(d => setLocalData(d))
+      .catch(e => console.error('AR v2 load failed', e));
+  }, [entityFilter]);
+
+  const data = localData;
+  if (!data) return h('div', { className: 'loading' }, 'Loading AR data...');
+
+  const { deals, invoicesByDeal, unlinked, last_sync } = data;
+  const EIDs = ['ALL', 'US', 'CA', 'UK', 'AU'];
+
+  const BUCKETS = ['current', '1-30', '31-60', '61-90', '90+', 'no-date'];
+  const BUCKET_LABELS = { current: 'Current', '1-30': '1\u201330 days', '31-60': '31\u201360 days', '61-90': '61\u201390 days', '90+': '90+ days', 'no-date': 'No Date' };
+
+  const dealsWithAge = deals.map(deal => {
+    const tranches = computeDueDate(deal);
+    const fx = { US: 1, CA: 0.71, UK: 1.33, AU: 0.68 }[deal.entity_id] || 1;
+    const datedTranches = tranches.filter(t => t.date);
+    const earliestDue = datedTranches.length ? datedTranches.map(t => t.date).sort()[0] : null;
+    const bucket = ageBucket(earliestDue);
+    const days = earliestDue ? ageDays(earliestDue) : null;
+    const usd = Math.round(deal.invoiced_total * fx);
+    return { ...deal, tranches, earliestDue, bucket, days, usd };
+  });
+
+  const bucketTotals = {};
+  BUCKETS.forEach(b => { bucketTotals[b] = { count: 0, usd: 0 }; });
+  dealsWithAge.forEach(d => {
+    if (bucketTotals[d.bucket]) {
+      bucketTotals[d.bucket].count++;
+      bucketTotals[d.bucket].usd += d.usd;
+    }
+  });
+  const totalUSD = dealsWithAge.reduce((s, d) => s + d.usd, 0);
+  const unlinkedUSD = unlinked.reduce((s, i) => {
+    const fx = { US: 1, CA: 0.71, UK: 1.33, AU: 0.68 }[i.entity_id] || 1;
+    return s + (i.hs_amount_billed || 0) * fx;
+  }, 0);
+
+  const byOwner = {};
+  dealsWithAge.forEach(d => {
+    const k = d.owner_name || 'Unassigned';
+    if (!byOwner[k]) byOwner[k] = [];
+    byOwner[k].push(d);
+  });
+  const ownersSorted = Object.keys(byOwner).sort((a, b) => {
+    const totA = byOwner[a].reduce((s, d) => s + d.usd, 0);
+    const totB = byOwner[b].reduce((s, d) => s + d.usd, 0);
+    return totB - totA;
+  });
+
+  const fc = (n, eId) => fmtC(n, eId);
+
+  return h('div', null,
+    // Header controls
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 } },
+      h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+        EIDs.map(e => h('button', {
+          key: e,
+          className: 'pill' + (entityFilter === e ? ' active' : ''),
+          style: { '--c': e === 'ALL' ? C.steel : C.ent[e] },
+          onClick: () => setEntityFilter(e),
+        }, e === 'ALL' ? 'All Entities' : e)),
+        h('div', { style: { display: 'flex', gap: 6, marginLeft: 8 } },
+          [
+            { id: 'ageing', l: 'Ageing Summary' },
+            { id: 'recon', l: 'Reconciliation (' + unlinked.length + ')' },
+          ].map(s => h('button', {
+            key: s.id,
+            className: 'pill' + (arSub === s.id ? ' active' : ''),
+            style: { '--c': C.blue },
+            onClick: () => setArSub(s.id),
+          }, s.l))
+        ),
+      ),
+      last_sync && h('span', { style: { fontSize: 9, color: C.mid } },
+        'Last sync: ' + new Date(last_sync + 'Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+      )
+    ),
+
+    // AGEING SUMMARY SUB-TAB
+    arSub === 'ageing' && h('div', null,
+      // KPI ageing buckets
+      h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 8, marginBottom: 16 } },
+        h('div', { className: 'card kpi', style: { '--c': C.steel } },
+          h('div', { className: 'kpi-label' }, 'Total AR (USD)'),
+          h('div', { className: 'kpi-val' }, fmtF(totalUSD)),
+          h('div', { className: 'kpi-sub' }, deals.length + ' deals'),
+        ),
+        BUCKETS.filter(b => b !== 'no-date').map(b => h('div', {
+          key: b,
+          className: 'card kpi',
+          style: { '--c': ageBucketColor(b) },
+        },
+          h('div', { className: 'kpi-label' }, BUCKET_LABELS[b]),
+          h('div', { className: 'kpi-val', style: { fontSize: 16 } }, fmtF(bucketTotals[b].usd)),
+          h('div', { className: 'kpi-sub' }, bucketTotals[b].count + ' deals'),
+        ))
+      ),
+
+      // Deals table grouped by owner
+      h('div', { className: 'card' },
+        h('div', { className: 'card-hdr' },
+          h('span', null, 'AR Ageing \u2014 by Owner & Deal'),
+          h('span', { style: { fontSize: 10, color: C.mid } }, 'Due dates computed from HubSpot payment terms + install date'),
+        ),
+        h('div', { style: { overflowX: 'auto' } },
+          h('table', null,
+            h('thead', null, h('tr', null,
+              ['Deal', 'Invoice(s)', 'Entity', 'Invoiced', 'Terms', 'Due Date', 'Age', 'Install Date', 'Tickets', ''].map(col =>
+                h('th', { key: col, style: { fontSize: 10 } }, col)
+              )
+            )),
+            h('tbody', null,
+              ownersSorted.map(owner => {
+                const ownerDeals = byOwner[owner].sort((a, b) => b.usd - a.usd);
+                const ownerUSD = ownerDeals.reduce((s, d) => s + d.usd, 0);
+                return h(React.Fragment, { key: owner },
+                  h('tr', { style: { background: '#F5F4F0' } },
+                    h('td', { colSpan: 10, style: { fontSize: 11, fontWeight: 700, color: C.steel, padding: '6px 10px' } },
+                      owner + ' \u2014 ' + fmtF(ownerUSD) + ' USD (' + ownerDeals.length + ' deal' + (ownerDeals.length !== 1 ? 's' : '') + ')'
+                    )
+                  ),
+                  ownerDeals.map(deal => {
+                    const isExpanded = expandedDeal === deal.deal_id;
+                    const multi = deal.tranches.length > 1;
+                    const invList = invoicesByDeal[deal.deal_id] || [];
+                    return h(React.Fragment, { key: deal.deal_id },
+                      h('tr', {
+                        style: {
+                          background: deal.has_open_ticket ? '#FEF3F3' : deal.bucket === 'current' ? '#fff' : deal.bucket === '1-30' ? '#FFFDE7' : '#FFF5F5',
+                          cursor: multi ? 'pointer' : 'default',
+                        },
+                        onClick: () => multi && setExpandedDeal(isExpanded ? null : deal.deal_id),
+                      },
+                        h('td', { style: { fontWeight: 500, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                          multi && h('span', { style: { marginRight: 4, fontSize: 10, color: C.mid } }, isExpanded ? '\u25BE' : '\u25B8'),
+                          deal.hubspot_deal_url
+                            ? h('a', { href: deal.hubspot_deal_url, target: '_blank', style: { color: C.steel, textDecoration: 'none', borderBottom: '1px dotted #C4C3C1' } }, deal.deal_name)
+                            : deal.deal_name,
+                        ),
+                        h('td', { style: { fontSize: 10, color: C.mid, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                          deal.invoice_numbers || '\u2014'
+                        ),
+                        h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[deal.entity_id] } }, deal.entity_id)),
+                        h('td', { style: { fontWeight: 700, color: C.bad } }, fc(deal.invoiced_total, deal.entity_id)),
+                        h('td', { style: { fontSize: 10, color: C.mid, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                          deal.payment_terms_other || deal.payment_terms || '\u2014'
+                        ),
+                        h('td', { style: { fontSize: 10 } },
+                          multi
+                            ? h('span', { style: { color: C.mid } }, 'see detail')
+                            : deal.tranches[0]?.pendingInstall
+                              ? h('span', { style: { color: C.warn } }, 'Pending install')
+                              : deal.tranches[0]?.date
+                                ? h('span', { style: { color: ageBucketColor(deal.bucket), fontWeight: 600 } }, dateFmt(deal.tranches[0].date))
+                                : h('span', { style: { color: C.warn } }, 'No close date'),
+                        ),
+                        h('td', null,
+                          multi
+                            ? h('span', { style: { fontSize: 9, color: C.mid } }, '\u2014')
+                            : deal.days !== null && deal.days > 0
+                              ? h('span', { className: 'badge overdue', style: { background: ageBucketColor(deal.bucket) + '22', color: ageBucketColor(deal.bucket) } }, deal.days + 'd')
+                              : deal.days !== null && deal.days <= 0
+                                ? h('span', { className: 'badge paid' }, 'Current')
+                                : h('span', { style: { fontSize: 9, color: C.mid } }, '\u2014')
+                        ),
+                        h('td', { style: { fontSize: 10 } },
+                          deal.install_date ? dateFmt(deal.install_date) : h('span', { style: { color: C.warn, fontSize: 9 } }, 'No date')
+                        ),
+                        h('td', null,
+                          deal.has_open_ticket
+                            ? h('span', {
+                                title: [deal.ticket_subject, deal.ticket_category].filter(Boolean).join(' \u2014 '),
+                                style: { cursor: 'help', fontSize: 13, color: C.bad },
+                              }, '\u26A0')
+                            : h('span', { style: { color: C.warm } }, '\u2014')
+                        ),
+                        h('td', null,
+                          deal.hubspot_deal_url && h('a', { href: deal.hubspot_deal_url, target: '_blank', style: { fontSize: 10, color: C.blue } }, '\u2197')
+                        ),
+                      ),
+                      // Expanded 50/50 tranche rows
+                      isExpanded && deal.tranches.map((tr, ti) => {
+                        const trAmt = Math.round((deal.invoiced_total || 0) * tr.pct / 100);
+                        const trBucket = ageBucket(tr.date);
+                        const trDays = tr.date ? ageDays(tr.date) : null;
+                        const matchedInv = invList[ti] || null;
+                        return h('tr', { key: 'tr-' + ti, style: { background: '#F7F4F0', borderLeft: '3px solid ' + C.blue } },
+                          h('td', { style: { paddingLeft: 24, fontSize: 10, color: C.mid } }, tr.label),
+                          h('td', { style: { fontSize: 10, color: C.mid } }, matchedInv?.hs_number || '\u2014'),
+                          h('td'),
+                          h('td', { style: { fontSize: 11, fontWeight: 600, color: C.bad } }, fc(trAmt, deal.entity_id)),
+                          h('td'),
+                          h('td', { style: { fontSize: 10 } },
+                            tr.pendingInstall
+                              ? h('span', { style: { color: C.warn } }, 'Pending install date')
+                              : tr.date
+                                ? h('span', { style: { color: ageBucketColor(trBucket), fontWeight: 600 } }, dateFmt(tr.date))
+                                : h('span', { style: { color: C.warn } }, 'No date'),
+                          ),
+                          h('td', null,
+                            !tr.pendingInstall && trDays !== null && trDays > 0
+                              ? h('span', { className: 'badge overdue', style: { background: ageBucketColor(trBucket) + '22', color: ageBucketColor(trBucket) } }, trDays + 'd')
+                              : !tr.pendingInstall && trDays !== null
+                                ? h('span', { className: 'badge paid' }, 'Current')
+                                : h('span', { style: { fontSize: 9, color: C.warm } }, '\u2014')
+                          ),
+                          h('td'), h('td'), h('td'),
+                        );
+                      })
+                    );
+                  })
+                );
+              })
+            )
+          )
+        )
+      )
+    ),
+
+    // RECONCILIATION SUB-TAB
+    arSub === 'recon' && h('div', null,
+      h('div', { className: 'grid-4', style: { marginBottom: 16 } },
+        h('div', { className: 'card kpi', style: { '--c': C.warn } },
+          h('div', { className: 'kpi-label' }, 'Unlinked Invoices'),
+          h('div', { className: 'kpi-val' }, unlinked.length),
+          h('div', { className: 'kpi-sub' }, fmtF(Math.round(unlinkedUSD)) + ' USD'),
+        ),
+        h('div', { className: 'card kpi', style: { '--c': C.steel } },
+          h('div', { className: 'kpi-label' }, 'Linked Invoices'),
+          h('div', { className: 'kpi-val' }, deals.length + ' deals'),
+          h('div', { className: 'kpi-sub' }, fmtF(totalUSD) + ' USD'),
+        ),
+      ),
+      h('div', { className: 'card' },
+        h('div', { className: 'card-hdr', style: { background: '#FFF8E1', color: C.warn } },
+          h('span', null, 'Invoices Not Linked to a HubSpot Deal'),
+          h('span', null, unlinked.length + ' invoices \u2014 investigate for duplicates or timing gaps'),
+        ),
+        unlinked.length === 0
+          ? h('div', { style: { padding: 24, textAlign: 'center', color: C.ok, fontSize: 13 } }, '\u2713 All open invoices are linked to HubSpot deals')
+          : h('div', { style: { overflowX: 'auto' } },
+              h('table', null,
+                h('thead', null, h('tr', null,
+                  ['Invoice #', 'Title', 'Entity', 'Currency', 'Amount', 'Due Date', 'Created', ''].map(col =>
+                    h('th', { key: col, style: { fontSize: 10 } }, col)
+                  )
+                )),
+                h('tbody', null,
+                  unlinked.map((inv, i) => {
+                    const bucket = ageBucket(inv.hs_due_date);
+                    return h('tr', { key: inv.id, style: { background: i % 2 ? '#FAFAF8' : '#fff' } },
+                      h('td', { style: { fontWeight: 600, fontFamily: 'monospace', fontSize: 11 } }, inv.hs_number || inv.id),
+                      h('td', { style: { fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, inv.hs_title || '\u2014'),
+                      h('td', null, h('span', { style: { fontSize: 10, fontWeight: 700, color: C.ent[inv.entity_id] || C.mid } }, inv.entity_id)),
+                      h('td', { style: { fontSize: 10, color: C.mid } }, inv.hs_currency),
+                      h('td', { style: { fontWeight: 600, color: C.bad } }, fmtC(inv.hs_amount_billed, inv.entity_id)),
+                      h('td', { style: { fontSize: 10, color: ageBucketColor(bucket) } },
+                        inv.hs_due_date ? dateFmt(inv.hs_due_date) : '\u2014'
+                      ),
+                      h('td', { style: { fontSize: 10, color: C.mid } },
+                        inv.synced_at ? new Date(inv.synced_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }) : '\u2014'
+                      ),
+                      h('td', null,
+                        h('a', {
+                          href: 'https://app.hubspot.com/contacts/44093193/objects/0-53/views/all/list?query=' + encodeURIComponent(inv.hs_number || inv.id),
+                          target: '_blank',
+                          style: { fontSize: 10, color: C.blue },
+                        }, '\u2197')
+                      ),
+                    );
+                  })
+                )
+              )
+            )
+      )
+    )
+  );
+}
+
 // Main App
 function App(){
   const [tab,setTab]=us("overview");
@@ -556,6 +900,7 @@ function App(){
   const [apEntity,setApEntity]=us("ALL");
   const [syftAr,setSyftAr]=us([]);
   const [syncing,setSyncing]=us(false);
+  const [arV2Data,setArV2Data]=us(null);
 
   const load=()=>{
     const j=u=>fetch(u).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()});
@@ -569,11 +914,12 @@ function App(){
       j('/api/inputs'),
       j('/api/scenarios'),
       j('/api/syft-ar').catch(()=>({items:[]})),
-    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD])=>{
+      j('/api/ar-v2').catch(()=>({deals:[],invoicesByDeal:{},unlinked:[],last_sync:null})),
+    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,arV2D])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
       setStockPOs(poD.orders||[]);
       setTradeLoans(lnD.loans||[]);
-      setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setLoading(false);
+      setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setArV2Data(arV2D);setLoading(false);
       // Load Bureau Ops live data in background (don't block page load)
       fetch('/api/stock-pos-live').then(r=>r.ok?r.json():{orders:[]}).catch(()=>({orders:[]}))
         .then(bops=>{const o=bops.orders||[];if(o.length>0)setStockPOs(o)});
@@ -754,320 +1100,8 @@ function App(){
           )
         )})(),
 
-      // ═══ AR CHASING ═══
-      tab==="ar"&&(()=>{
-        const unpaid=ar.filter(d=>d.outstanding>0);
-        const isDefiniteTerm=t=>{if(!t)return false;return ['Due on Confirmation','Net 30','Net 30 from install','Net 30 from invoice','Net 60','Net 14','Net 15'].includes(t)||t.includes('50/50')||t.includes('50%')};
-        const definite=unpaid.filter(d=>isDefiniteTerm(d.payment_terms));
-        const proposed=unpaid.filter(d=>!isDefiniteTerm(d.payment_terms));
-        const missingInv=unpaid.filter(d=>!d.invoice_status||d.invoice_status==='');
-        const justClosed=unpaid.filter(d=>d.just_closed);
-        const toUSD=(d)=>Math.round((d.outstanding||0)*((entMap[d.entity_id]||{}).fx_rate||1));
-        const regionOrder=['AU','UK','US','CA'];
-        const regionLabel={AU:'AUS',UK:'UK',US:'USA',CA:'CAD'};
-
-        const DealRow=(d,showTermsNote)=>h("tr",{key:d.id},
-          h("td",{style:{fontWeight:500,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},
-            d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{color:C.steel,textDecoration:"none"}},d.deal_name):d.deal_name),
-          h("td",{style:{color:C.mid,fontSize:10}},d.owner),
-          h("td",null,h("span",{style:{color:C.ent[d.entity_id],fontWeight:600}},d.entity_id)),
-          h("td",{style:{color:C.mid}},d.currency),
-          h("td",{style:{fontSize:10}},fmtF(d.amount)),
-          h("td",{style:{fontSize:10,color:C.ok}},d.paid?fmtF(d.paid):"\u2014"),
-          h("td",{style:{fontWeight:600}},fmtF(d.outstanding)),
-          h("td",{style:{fontWeight:600,color:C.mid,fontSize:10}},fmtF(toUSD(d))),
-          h("td",{style:{fontSize:9,maxWidth:160,whiteSpace:"normal",lineHeight:"1.3"}},
-            d.payment_terms==='Other'&&d.payment_terms_other
-              ?h("span",{style:{display:"flex",alignItems:"flex-start",gap:3}},
-                  h("span",{style:{background:C.blue,color:"#fff",borderRadius:2,padding:"0 3px",fontSize:8,flexShrink:0,marginTop:1}},"i"),
-                  h("span",null,d.payment_terms_other))
-              :(d.payment_terms||"\u2014")),
-          h("td",{style:{fontSize:10}},dateFmt(d.close_date)),
-          h("td",{style:{fontSize:10,color:C.mid}},d.age_days||"\u2014"),
-          h("td",{style:{fontSize:10}},dateFmt(d.promised_date)),
-          h("td",null,h("span",{className:"badge "+(d.overdue?"true":"false")},d.overdue?"Yes":"No")),
-          h("td",null,d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{fontSize:9,color:C.blue}},"\u2197"):null)
-        );
-
-        const DealTable=(deals,showTermsNote)=>{
-          const byRegion={};
-          regionOrder.forEach(r=>{const rd=deals.filter(d=>d.entity_id===r).sort((a,b)=>(b.outstanding||0)-(a.outstanding||0));if(rd.length)byRegion[r]=rd});
-          return h("table",null,
-            h("thead",null,h("tr",null,["Deal","Owner","Entity","Cur","Amount","Paid","Outstanding","USD","Terms","Closed","Age","Promised","Overdue",""].map(x=>h("th",{key:x},x)))),
-            h("tbody",null,
-              regionOrder.map(r=>{
-                const rd=byRegion[r];if(!rd)return null;
-                return h(React.Fragment,{key:r},
-                  h("tr",null,h("td",{colSpan:14,style:{fontSize:10,fontWeight:600,color:C.ent[r],paddingTop:8,borderBottom:"none"}},
-                    "\u2014 "+regionLabel[r]+" ("+rd.length+" deal"+(rd.length!==1?"s":"")+") \u2014")),
-                  rd.map(d=>DealRow(d,showTermsNote)))})
-            ));
-        };
-
-        const ARSUBS=[{id:"summary",l:"Summary"},{id:"definite",l:"Definite ("+definite.length+")"},{id:"proposed",l:"Proposed ("+proposed.length+")"},{id:"missing",l:"Missing Inv ("+missingInv.length+")"},{id:"justclosed",l:"Just Closed ("+justClosed.length+")"},{id:"recon",l:"Reconciliation"}];
-
-        return h("div",null,
-          h("div",{style:{display:"flex",gap:6,marginBottom:14}},
-            ARSUBS.map(s=>h("button",{key:s.id,className:"pill"+(arSub===s.id?" active":""),style:{"--c":C.steel},onClick:()=>setArSub(s.id)},s.l))),
-
-          arSub==="summary"&&h("div",null,
-            h("div",{className:"grid-4",style:{marginBottom:16}},
-              [{l:"Total AR Outstanding",v:fmtF(Math.round(unpaid.reduce((s,d)=>s+toUSD(d),0))),s:unpaid.length+" deals",c:C.steel},
-               {l:"Definite Chases",v:fmtF(Math.round(definite.reduce((s,d)=>s+toUSD(d),0))),s:definite.length+" deals",c:C.ok},
-               {l:"Proposed Chases",v:fmtF(Math.round(proposed.reduce((s,d)=>s+toUSD(d),0))),s:proposed.length+" deals",c:C.warn},
-               {l:"Missing Invoices",v:missingInv.length+" deals",s:"No invoice raised",c:C.bad}
-              ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))),
-            h("div",{className:"card",style:{marginBottom:16}},
-              h("div",{className:"card-hdr"},"Outstanding by Region (USD)"),
-              h("table",null,h("thead",null,h("tr",null,["Region","Definite (USD)","Proposed (USD)","Total (USD)","Deals"].map(x=>h("th",{key:x},x)))),
-                h("tbody",null,regionOrder.map(r=>{const rdDef=definite.filter(d=>d.entity_id===r);const rdProp=proposed.filter(d=>d.entity_id===r);const allR=unpaid.filter(d=>d.entity_id===r);
-                  return h("tr",{key:r},h("td",{style:{fontWeight:600,color:C.ent[r]}},regionLabel[r]),
-                    h("td",null,fmtF(rdDef.reduce((s,d)=>s+toUSD(d),0))),h("td",null,rdProp.length?fmtF(rdProp.reduce((s,d)=>s+toUSD(d),0)):"\u2014"),h("td",{style:{fontWeight:700}},fmtF(allR.reduce((s,d)=>s+toUSD(d),0))),h("td",{style:{color:C.mid}},allR.length))}
-                )))
-            ),
-            h("div",{className:"card"},
-              h("div",{className:"card-hdr"},"Outstanding Leaderboard (USD)"),
-              h("table",null,h("thead",null,h("tr",null,["#","Owner","Outstanding (USD)","Deals"].map(x=>h("th",{key:x},x)))),
-                h("tbody",null,(()=>{const byOwner={};unpaid.forEach(d=>{if(!byOwner[d.owner])byOwner[d.owner]={usd:0,cnt:0};byOwner[d.owner].usd+=toUSD(d);byOwner[d.owner].cnt++});
-                  return Object.entries(byOwner).sort((a,b)=>b[1].usd-a[1].usd).map(([name,v],i)=>h("tr",{key:name},h("td",null,i+1),h("td",{style:{fontWeight:500}},name),h("td",{style:{fontWeight:600}},fmtF(v.usd)),h("td",null,v.cnt)))})()))
-            )
-          ),
-
-          arSub==="definite"&&h("div",{className:"card"},
-            h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},h("span",null,"Definite Chases — Payment Terms Confirmed"),h("span",null,fmtF(Math.round(definite.reduce((s,d)=>s+toUSD(d),0)))+" USD")),
-            DealTable(definite)),
-
-          arSub==="proposed"&&h("div",{className:"card"},
-            h("div",{className:"card-hdr",style:{color:C.warn,background:"#FEF3D6"}},h("span",null,"Proposed Chases — Terms TBC"),h("span",null,proposed.length+" deals")),
-            DealTable(proposed,true)),
-
-          arSub==="missing"&&h("div",{className:"card"},
-            h("div",{className:"card-hdr",style:{color:C.bad,background:"#FDE8E8"}},h("span",null,"Missing Invoices — No Invoice Raised"),h("span",null,missingInv.length+" deals")),
-            DealTable(missingInv)),
-
-          arSub==="justclosed"&&h("div",{className:"card"},
-            h("div",{className:"card-hdr",style:{color:C.blue,background:"#EDF2FE"}},h("span",null,"Just Closed — Last 3 Days"),h("span",null,justClosed.length+" deals")),
-            DealTable(justClosed)),
-
-          // ═══ RECONCILIATION SUB-TAB ═══
-          arSub==="recon"&&(()=>{
-            const EIDs=["US","CA","UK","AU"];
-            const syftRecon=waterfall?Object.fromEntries(Object.entries(waterfall.entities||{}).map(([k,v])=>([k,{ar_total:v.arTotal}]))):{};
-
-            // Auto-match: try invoice_number first, then fuzzy name+amount
-            const normalize=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
-            const matchScore=(syftItem,deal)=>{
-              // Exact invoice number match
-              if(syftItem.invoice_number&&deal.invoice_number&&normalize(syftItem.invoice_number)===normalize(deal.invoice_number)) return 100;
-              // Name similarity + amount within 5%
-              const sName=normalize(syftItem.customer_name), dName=normalize(deal.deal_name);
-              let nameMatch=0;
-              if(sName&&dName){if(sName.includes(dName)||dName.includes(sName)) nameMatch=60;
-                else{const words=sName.split(/\s+/);const dWords=dName.split(/\s+/);const common=words.filter(w=>w.length>2&&dWords.some(dw=>dw.includes(w)));nameMatch=common.length?Math.min(50,common.length*15):0}}
-              const amtDiff=Math.abs((syftItem.outstanding||0)-(deal.outstanding||0));
-              const amtMatch=amtDiff<Math.max(syftItem.outstanding||1,1)*0.05?30:amtDiff<Math.max(syftItem.outstanding||1,1)*0.15?15:0;
-              return nameMatch+amtMatch;
-            };
-
-            // Group Syft items by entity
-            const syftByE={};EIDs.forEach(e=>{syftByE[e]=syftAr.filter(s=>s.entity_id===e)});
-            const dealsByE={};EIDs.forEach(e=>{dealsByE[e]=unpaid.filter(d=>d.entity_id===e)});
-
-            // Auto-match each Syft item to best deal
-            const autoMatches={};
-            EIDs.forEach(e=>{
-              const available=new Set(dealsByE[e].map(d=>d.id));
-              syftByE[e].forEach(si=>{
-                if(si.matched_deal_id){autoMatches[si.id]=si.matched_deal_id;available.delete(si.matched_deal_id);return}
-                let best=null,bestScore=0;
-                for(const d of dealsByE[e]){
-                  if(!available.has(d.id))continue;
-                  const sc=matchScore(si,d);
-                  if(sc>bestScore){bestScore=sc;best=d}
-                }
-                if(best&&bestScore>=40){autoMatches[si.id]=best.id;available.delete(best.id)}
-              });
-            });
-
-            // Classify
-            const matched=[],inSyftOnly=[],inHSOnly={};
-            EIDs.forEach(e=>{
-              const matchedDealIds=new Set();
-              syftByE[e].forEach(si=>{
-                const dealId=autoMatches[si.id];
-                if(dealId){const deal=dealsByE[e].find(d=>d.id===dealId);if(deal){matched.push({syft:si,deal,entity:e});matchedDealIds.add(dealId)}
-                } else {inSyftOnly.push({syft:si,entity:e})}
-              });
-              dealsByE[e].filter(d=>!matchedDealIds.has(d.id)).forEach(d=>{
-                if(!inHSOnly[e])inHSOnly[e]=[];inHSOnly[e].push(d);
-              });
-            });
-
-            // Totals per entity
-            const syftTotalByE={},hsTotalByE={},matchedTotalByE={},gapByE={};
-            EIDs.forEach(e=>{
-              syftTotalByE[e]=syftByE[e].reduce((s,i)=>s+(i.outstanding||0),0);
-              hsTotalByE[e]=dealsByE[e].reduce((s,d)=>s+(d.outstanding||0),0);
-              matchedTotalByE[e]=matched.filter(m=>m.entity===e).reduce((s,m)=>s+(m.syft.outstanding||0),0);
-              gapByE[e]=(syftRecon[e]?.ar_total||0)-hsTotalByE[e];
-            });
-
-            const fc=fmtC; // shorthand
-
-            return h("div",null,
-              // KPI summary
-              h("div",{className:"grid-4",style:{marginBottom:16}},
-                [{l:"Syft AR Total",v:fmtF(Math.round(EIDs.reduce((s,e)=>s+(syftRecon[e]?.ar_total||0)*(entMap[e]?.fx_rate||1),0))),s:"Accounting system",c:C.steel},
-                 {l:"HubSpot AR Total",v:fmtF(Math.round(unpaid.reduce((s,d)=>s+toUSD(d),0))),s:unpaid.length+" deals",c:C.blue},
-                 {l:"Gap (Syft \u2212 HS)",v:fmtF(Math.round(EIDs.reduce((s,e)=>s+gapByE[e]*(entMap[e]?.fx_rate||1),0))),s:"Not in HubSpot",c:C.warn},
-                 {l:"Syft Items Loaded",v:syftAr.length+"",s:matched.length+" matched, "+inSyftOnly.length+" unmatched",c:syftAr.length?C.ok:C.mid}
-                ].map((k,i)=>h("div",{key:i,className:"card kpi",style:{"--c":k.c}},h("div",{className:"kpi-label"},k.l),h("div",{className:"kpi-val"},k.v),h("div",{className:"kpi-sub"},k.s)))),
-
-              // Per-entity gap
-              h("div",{className:"card",style:{marginBottom:16}},
-                h("div",{className:"card-hdr"},"AR Reconciliation by Entity"),
-                h("table",null,
-                  h("thead",null,h("tr",null,["Entity","Syft AR Total","HubSpot AR","Syft Items Loaded","Matched","Unmatched","Gap"].map(x=>h("th",{key:x,style:{textAlign:"right",padding:"6px 10px"}},x)))),
-                  h("tbody",null,EIDs.map(e=>h("tr",{key:e},
-                    h("td",{style:{fontWeight:600,color:C.ent[e],padding:"6px 10px"}},e),
-                    h("td",{style:{textAlign:"right",padding:"6px 10px"}},fc(syftRecon[e]?.ar_total||0,e)),
-                    h("td",{style:{textAlign:"right",padding:"6px 10px"}},fc(hsTotalByE[e],e)),
-                    h("td",{style:{textAlign:"right",padding:"6px 10px"}},syftByE[e].length||"\u2014"),
-                    h("td",{style:{textAlign:"right",padding:"6px 10px",color:C.ok}},matched.filter(m=>m.entity===e).length||"\u2014"),
-                    h("td",{style:{textAlign:"right",padding:"6px 10px",color:C.warn}},inSyftOnly.filter(m=>m.entity===e).length||"\u2014"),
-                    h("td",{style:{textAlign:"right",padding:"6px 10px",fontWeight:600,color:gapByE[e]>0?C.warn:C.ok}},fc(Math.round(gapByE[e]),e))
-                  )))
-                )
-              ),
-
-              // Upload CSV from Syft
-              h("div",{className:"card",style:{marginBottom:16}},
-                h("div",{className:"card-hdr"},h("span",null,"Upload Syft AR Report"),
-                  h("span",{style:{fontSize:10,color:C.mid}},"CSV from Syft AR Aging or AR Detail report")),
-                h("div",{style:{padding:12,display:"flex",gap:8,alignItems:"center"}},
-                  h("select",{id:"syft-ar-entity",style:{padding:"6px 10px",borderRadius:4,border:"1px solid #E8E7E3",fontFamily:"inherit"}},
-                    EIDs.map(e=>h("option",{key:e,value:e},e+" — "+(entMap[e]?.label||e)))),
-                  h("input",{type:"file",accept:".csv",style:{fontSize:11},onChange:ev=>{
-                    const file=ev.target.files[0];if(!file)return;
-                    const entitySel=document.getElementById("syft-ar-entity").value;
-                    const reader=new FileReader();
-                    reader.onload=fe=>{
-                      const text=fe.target.result,lines=text.split("\n").filter(l=>l.trim());
-                      if(lines.length<2)return;
-                      const parseCSV=line=>{const res=[];let cur='',inQ=false;
-                        for(let i=0;i<line.length;i++){const c=line[i];
-                          if(c==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++}else{inQ=!inQ}}
-                          else if(c===','&&!inQ){res.push(cur.trim());cur=''}
-                          else{cur+=c}}
-                        res.push(cur.trim());return res};
-                      // Auto-detect header: need 2+ of these keywords
-                      const hdrKeys=['customer','invoice','amount','outstanding','due','date','balance','aging','age','total','overdue'];
-                      let hdrIdx=0;
-                      for(let i=0;i<Math.min(lines.length,10);i++){
-                        const low=lines[i].toLowerCase();
-                        if(hdrKeys.filter(k=>low.includes(k)).length>=2){hdrIdx=i;break}}
-                      const hdr=parseCSV(lines[hdrIdx]).map(h=>h.toLowerCase().replace(/[^a-z0-9]/g,''));
-                      const pn=s=>{if(!s)return 0;return parseFloat(s.replace(/[$,%\s£A\u20AC]/g,'').replace(/,/g,''))||0};
-                      const find=(row,...keys)=>{for(const k of keys){const idx=hdr.findIndex(h=>h.includes(k));if(idx>=0&&row[idx]?.trim())return row[idx].trim()}return ''};
-                      const parseDate=s=>{if(!s)return '';
-                        if(s.includes('/')){const p=s.split('/');if(p.length===3)return(p[2].length===2?'20'+p[2]:p[2])+'-'+p[1].padStart(2,'0')+'-'+p[0].padStart(2,'0')}
-                        if(s.match(/^\d{4}-\d{2}/))return s.slice(0,10);
-                        return s};
-                      const rows=lines.slice(hdrIdx+1).map(l=>parseCSV(l));
-                      const items=rows.filter(r=>{const amt=pn(find(r,'outstanding','balance','owing','total'));return amt>0}).map(r=>({
-                        entity_id:entitySel,
-                        customer_name:find(r,'customer','client','name','contact','debtor'),
-                        invoice_number:find(r,'invoice','invno','invnum','document','ref','reference'),
-                        invoice_date:parseDate(find(r,'invoicedate','date','issued')),
-                        due_date:parseDate(find(r,'duedate','due','paymentdate')),
-                        amount:pn(find(r,'amount','original','total','invoiceamount')),
-                        outstanding:pn(find(r,'outstanding','balance','owing','amountdue','remaining')),
-                        age_bucket:find(r,'aging','age','bucket','period','ageing')||''
-                      }));
-                      if(!items.length){alert('No valid AR items found in CSV ('+lines.length+' lines, header at row '+(hdrIdx+1)+': '+hdr.slice(0,5).join(', ')+')');return}
-                      if(!confirm('Found '+items.length+' AR items for '+entitySel+'. Replace existing Syft AR data for '+entitySel+'?'))return;
-                      setSaving(true);
-                      fetch('/api/syft-ar',{method:'PUT',headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({replace_all:true,entity_id:entitySel,items})})
-                        .then(()=>fetch('/api/syft-ar').then(r=>r.json()))
-                        .then(d=>{setSyftAr(d.items||[]);setSaving(false)})
-                        .catch(e=>{alert('Error: '+e.message);setSaving(false)});
-                    };
-                    reader.readAsText(file);
-                  }}),
-                  syftAr.length>0&&h("button",{style:{padding:"6px 12px",background:C.bad,color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontSize:11,fontFamily:"inherit"},onClick:()=>{
-                    if(!confirm('Clear all Syft AR data?'))return;
-                    setSaving(true);
-                    fetch('/api/syft-ar',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({replace_all:true,items:[]})})
-                      .then(()=>{setSyftAr([]);setSaving(false)});
-                  }},"Clear All")
-                )
-              ),
-
-              // Unmatched Syft items — in Syft but NOT in HubSpot
-              inSyftOnly.length>0&&h("div",{className:"card",style:{marginBottom:16}},
-                h("div",{className:"card-hdr",style:{color:C.warn,background:"#FFF8E1"}},
-                  h("span",null,"In Syft, Not Matched to HubSpot"),
-                  h("span",null,inSyftOnly.length+" items \u2014 "+fmtF(Math.round(inSyftOnly.reduce((s,m)=>s+(m.syft.outstanding||0)*(entMap[m.entity]?.fx_rate||1),0)))+" USD")),
-                h("div",{style:{overflowX:"auto"}},h("table",null,
-                  h("thead",null,h("tr",null,["Entity","Customer","Invoice #","Amount","Outstanding","Due Date","Age"].map(x=>h("th",{key:x,style:{padding:"6px 8px",fontSize:11}},x)))),
-                  h("tbody",null,inSyftOnly.sort((a,b)=>(b.syft.outstanding||0)-(a.syft.outstanding||0)).map((m,i)=>h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
-                    h("td",{style:{padding:"5px 8px",fontWeight:600,color:C.ent[m.entity]}},m.entity),
-                    h("td",{style:{padding:"5px 8px",fontSize:11}},m.syft.customer_name),
-                    h("td",{style:{padding:"5px 8px",fontSize:11,fontFamily:"monospace"}},m.syft.invoice_number||"\u2014"),
-                    h("td",{style:{padding:"5px 8px",textAlign:"right"}},fc(m.syft.amount,m.entity)),
-                    h("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600}},fc(m.syft.outstanding,m.entity)),
-                    h("td",{style:{padding:"5px 8px",fontSize:10}},m.syft.due_date||"\u2014"),
-                    h("td",{style:{padding:"5px 8px",fontSize:10}},m.syft.age_bucket||"\u2014")
-                  )))
-                ))
-              ),
-
-              // In HubSpot but not matched to Syft
-              Object.values(inHSOnly).flat().length>0&&h("div",{className:"card",style:{marginBottom:16}},
-                h("div",{className:"card-hdr",style:{color:C.blue,background:"#EDF2FE"}},
-                  h("span",null,"In HubSpot, Not Matched to Syft"),
-                  h("span",null,Object.values(inHSOnly).flat().length+" deals \u2014 "+fmtF(Math.round(Object.values(inHSOnly).flat().reduce((s,d)=>s+toUSD(d),0)))+" USD")),
-                h("div",{style:{overflowX:"auto"}},h("table",null,
-                  h("thead",null,h("tr",null,["Entity","Deal Name","Owner","Amount","Outstanding","Close Date","Invoice Status"].map(x=>h("th",{key:x,style:{padding:"6px 8px",fontSize:11}},x)))),
-                  h("tbody",null,Object.values(inHSOnly).flat().sort((a,b)=>(b.outstanding||0)-(a.outstanding||0)).map((d,i)=>h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
-                    h("td",{style:{padding:"5px 8px",fontWeight:600,color:C.ent[d.entity_id]}},d.entity_id),
-                    h("td",{style:{padding:"5px 8px",fontSize:11}},d.hubspot_link?h("a",{href:d.hubspot_link,target:"_blank",style:{color:C.blue,textDecoration:"none"}},d.deal_name):d.deal_name),
-                    h("td",{style:{padding:"5px 8px",fontSize:10}},d.owner),
-                    h("td",{style:{padding:"5px 8px",textAlign:"right"}},fc(d.amount,d.entity_id)),
-                    h("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600}},fc(d.outstanding,d.entity_id)),
-                    h("td",{style:{padding:"5px 8px",fontSize:10}},dateFmt(d.close_date)),
-                    h("td",{style:{padding:"5px 8px",fontSize:10,color:d.invoice_status?C.ok:C.bad}},d.invoice_status||"No invoice")
-                  )))
-                ))
-              ),
-
-              // Matched items
-              matched.length>0&&h("div",{className:"card"},
-                h("div",{className:"card-hdr",style:{color:C.ok,background:"#E2F5EC"}},
-                  h("span",null,"Matched (Syft \u2194 HubSpot)"),
-                  h("span",null,matched.length+" items")),
-                h("div",{style:{overflowX:"auto"}},h("table",null,
-                  h("thead",null,h("tr",null,["Entity","Syft Customer","Syft Invoice","Syft Outstanding","HubSpot Deal","HS Outstanding","Diff"].map(x=>h("th",{key:x,style:{padding:"6px 8px",fontSize:11}},x)))),
-                  h("tbody",null,matched.map((m,i)=>{const diff=(m.syft.outstanding||0)-(m.deal.outstanding||0);
-                    return h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
-                      h("td",{style:{padding:"5px 8px",fontWeight:600,color:C.ent[m.entity]}},m.entity),
-                      h("td",{style:{padding:"5px 8px",fontSize:11}},m.syft.customer_name),
-                      h("td",{style:{padding:"5px 8px",fontSize:11,fontFamily:"monospace"}},m.syft.invoice_number||"\u2014"),
-                      h("td",{style:{padding:"5px 8px",textAlign:"right"}},fc(m.syft.outstanding,m.entity)),
-                      h("td",{style:{padding:"5px 8px",fontSize:11}},m.deal.hubspot_link?h("a",{href:m.deal.hubspot_link,target:"_blank",style:{color:C.blue,textDecoration:"none"}},m.deal.deal_name):m.deal.deal_name),
-                      h("td",{style:{padding:"5px 8px",textAlign:"right"}},fc(m.deal.outstanding,m.entity)),
-                      h("td",{style:{padding:"5px 8px",textAlign:"right",fontWeight:600,color:Math.abs(diff)>1?C.warn:C.ok}},diff?fc(Math.round(diff),m.entity):"\u2713")
-                    )}))
-                ))
-              ),
-
-              // No data prompt
-              syftAr.length===0&&h("div",{style:{padding:24,textAlign:"center",color:C.mid}},
-                h("div",{style:{fontSize:14,marginBottom:8}},"No Syft AR data loaded yet"),
-                h("div",{style:{fontSize:11}},"Upload a Syft AR Aging or AR Detail CSV report above to start reconciliation. The report should include columns like Customer, Invoice #, Amount, Outstanding, Due Date."))
-            )})()
-        )})(),
+      // ═══ AR CHASING (v2 — Invoice-centric) ═══
+      tab==="ar"&&h(ARv2Tab, { arData: arV2Data }),
 
       // ═══ AP SCHEDULE ═══
       tab==="ap"&&(()=>{
