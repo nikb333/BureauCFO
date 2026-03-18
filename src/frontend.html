@@ -1087,14 +1087,27 @@ function ARv2Tab({ arData }) {
                                 )
                               )
                       ),
-                      // Install Date
+                      // Install Date + Status
                       h('td', { style: { fontSize: 10 } },
                         isFirstForDeal
-                          ? (deal.install_date
-                              ? dateFmt(deal.install_date)
-                              : (tr.pendingInstall
-                                  ? h('span', { style: { color: C.warn, fontSize: 10 } }, 'Pending install date')
-                                  : h('span', { style: { color: C.mid, fontSize: 9 } }, 'No date')))
+                          ? h('div', null,
+                              deal.install_date ? dateFmt(deal.install_date)
+                                : (tr.pendingInstall
+                                    ? h('span', { style: { color: C.warn, fontSize: 10 } }, 'Pending install date')
+                                    : h('span', { style: { color: C.mid, fontSize: 9 } }, 'No date')),
+                              deal.install_status && deal.install_status !== 'Not Scheduled' && h('div', null,
+                                (function() {
+                                  var st = deal.install_status;
+                                  var col = st === 'Fully Complete' || st === 'Install Complete' ? C.ok
+                                    : st === 'Install Scheduled' || st === 'Install Prep' ? C.blue
+                                    : st === 'Rectifications' || st === 'On Hold' ? C.warn
+                                    : st === 'Cancelled' ? '#9B111E'
+                                    : C.mid;
+                                  return h('span', { style: { fontSize: 8, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
+                                    background: col + '18', color: col, whiteSpace: 'nowrap' } }, st);
+                                })()
+                              )
+                            )
                           : ''
                       ),
                       // Terms
@@ -2437,7 +2450,7 @@ function App(){
                     h("td",{style:{color:C.mid,fontSize:10}},d.owner),
                     h("td",{style:{fontWeight:600,color:C.ok}},fc(d.outstanding)),
                     h("td",null,termsDisplay),
-                    h("td",{style:{fontSize:10}},dateFmt(d.install_date)||"—"),
+                    h("td",{style:{fontSize:10}},dateFmt(d.install_date)||"—",d.install_status&&d.install_status!=='Not Scheduled'&&h("div",null,(function(){var st=d.install_status;var col=st==='Fully Complete'||st==='Install Complete'?C.ok:st==='Install Scheduled'||st==='Install Prep'?C.blue:st==='Rectifications'||st==='On Hold'?C.warn:st==='Cancelled'?'#9B111E':C.mid;return h("span",{style:{fontSize:8,fontWeight:600,padding:"1px 5px",borderRadius:3,background:col+"18",color:col}},st)})())),
                     h("td",{style:{fontSize:9}},sched.map((s,si)=>h("div",{key:si,style:{display:"flex",justifyContent:"space-between",gap:8,padding:"1px 0",borderBottom:si<sched.length-1?"1px solid #F0EFEB":"none"}},
                       h("span",{style:{color:C.mid}},s.label),
                       h("span",{style:{fontWeight:600,color:C.ok}},fc(Math.round((d.outstanding||0)*s.pct/100))),
