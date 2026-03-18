@@ -1593,6 +1593,7 @@ function App(){
   const [syftAr,setSyftAr]=us([]);
   const [syncing,setSyncing]=us(false);
   const [arV2Data,setArV2Data]=us(null);
+  const [qboData,setQboData]=us(null);
 
   const load=()=>{
     const j=u=>fetch(u).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()});
@@ -1607,11 +1608,12 @@ function App(){
       j('/api/scenarios'),
       j('/api/syft-ar').catch(()=>({items:[]})),
       j('/api/ar-v2').catch(()=>({deals:[],invoicesByDeal:{},unlinked:[],last_sync:null})),
-    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,arV2D])=>{
+      j('/api/qbo-recon').catch(()=>({summary:[],matched:[],unmatched:[],dealsWithMissingQBO:[],apBills:[]})),
+    ]).then(([ent,arD,apD,poD,lnD,wf,inp,sc,syftArD,arV2D,qboD])=>{
       setEntities(ent.entities||[]);setAr(arD.deals||[]);setAp(apD.vendors||[]);
       setStockPOs(poD.orders||[]);
       setTradeLoans(lnD.loans||[]);
-      setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setArV2Data(arV2D);setLoading(false);
+      setWaterfall(wf);setInputs(inp);setScenarios(sc.scenarios||[]);setSyftAr(syftArD.items||[]);setArV2Data(arV2D);setQboData(qboD);setLoading(false);
       // Load Bureau Ops live data in background (don't block page load)
       fetch('/api/stock-pos-live').then(r=>r.ok?r.json():{orders:[]}).catch(()=>({orders:[]}))
         .then(bops=>{const o=bops.orders||[];if(o.length>0)setStockPOs(o)});
@@ -1640,7 +1642,7 @@ function App(){
   if(loading)return h("div",{className:"loading"},"Loading Bureau CFO Dashboard...");
   if(error)return h("div",{className:"loading",style:{color:C.bad}},"Error: "+error);
 
-  const TABS=[{id:"overview",l:"Overview"},{id:"ar",l:"AR Chasing"},{id:"ap",l:"AP Schedule"},{id:"entity",l:"Entity Cashflow"},{id:"stock",l:"Stock Payments"},{id:"inputs",l:"Inputs"},{id:"scenarios",l:"Scenarios"}];
+  const TABS=[{id:"overview",l:"Overview"},{id:"ar",l:"AR Chasing"},{id:"ap",l:"AP Schedule"},{id:"qbo",l:"QBO Recon"},{id:"entity",l:"Entity Cashflow"},{id:"stock",l:"Stock Payments"},{id:"inputs",l:"Inputs"},{id:"scenarios",l:"Scenarios"}];
   const lowestWk=waterfall?.consolidated?Math.min(...waterfall.consolidated.filter(w=>w.week!=='Today').map(w=>w.withStock)):0;
 
   return h("div",null,
@@ -1897,6 +1899,200 @@ function App(){
             )
           )
         )
+      })(),
+
+      // ═══ QBO RECONCILIATION ═══
+      tab==="qbo"&&(()=>{
+        const loadQBO=()=>{fetch('/api/qbo-recon').then(r=>r.json()).then(d=>setQboData(d)).catch(e=>console.error('QBO recon load failed',e))};
+        const toks=qboData?.tokens||[];
+        const summ=qboData?.summary||[];
+        const unmatchedInv=qboData?.unmatched||[];
+        const matchedInv=qboData?.matched||[];
+        const missingDeals=qboData?.dealsWithMissingQBO||[];
+        const qboAP=qboData?.apBills||[];
+        return h("div",null,
+          h("div",{style:{fontSize:16,fontWeight:700,marginBottom:4}},"QBO Reconciliation"),
+          h("div",{style:{fontSize:11,color:C.mid,marginBottom:16}},"Cross-reference QuickBooks Online invoices against HubSpot deals. Identifies gaps in AR tracking."),
+
+          // Connection status + sync button
+          h("div",{style:{display:"flex",gap:12,marginBottom:16,flexWrap:"wrap",alignItems:"center"}},
+            toks.map((t,i)=>{
+              const expired=new Date(t.expires_at)<new Date();
+              const updatedMins=t.updated_at?Math.round((new Date()-new Date(t.updated_at+'Z'))/60000):null;
+              return h("div",{key:i,style:{padding:"8px 14px",borderRadius:6,
+                background:expired?"#FDECEA":"#E2F5EC",
+                border:"1px solid "+(expired?"#F5C6C6":"#B8DEC9"),fontSize:10}},
+                h("span",{style:{fontWeight:700,color:expired?C.bad:C.ok}},t.entity_id+" QBO"),
+                h("span",{style:{color:C.mid,marginLeft:8}},expired?"Token expired — re-auth needed":"Connected"),
+                updatedMins!==null&&h("div",{style:{color:C.mid,marginTop:2}},"Last sync: "+updatedMins+" mins ago")
+              );
+            }),
+            h("button",{className:"btn",style:{padding:"6px 14px",background:C.steel,color:"#fff",border:"none",borderRadius:4,fontSize:11,cursor:"pointer",fontFamily:"inherit"},
+              onClick:()=>{
+                fetch('/api/sync-accounting',{method:'POST'})
+                  .then(r=>r.json())
+                  .then(d=>{alert('Sync complete: '+JSON.stringify(d.synced));loadQBO()});
+              }},"Sync QBO Now")
+          ),
+
+          // Summary KPI strip
+          summ.length>0&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat("+Math.min(summ.length*2,4)+",1fr)",gap:8,marginBottom:16}},
+            summ.flatMap(row=>[
+              h("div",{key:row.entity_id+"-ar",className:"card",style:{padding:12,borderLeft:"3px solid "+C.blue}},
+                h("div",{style:{fontSize:9,color:C.mid,fontWeight:600,textTransform:"uppercase",marginBottom:4}},row.entity_id+" QBO AR"),
+                h("div",{style:{fontSize:18,fontWeight:700,color:C.steel}},fmtC(row.total_ar,row.entity_id)),
+                h("div",{style:{fontSize:10,color:C.mid}},row.invoice_count+" open invoices")
+              ),
+              h("div",{key:row.entity_id+"-unmatched",className:"card",style:{padding:12,borderLeft:"3px solid "+C.warn}},
+                h("div",{style:{fontSize:9,color:C.mid,fontWeight:600,textTransform:"uppercase",marginBottom:4}},row.entity_id+" Unmatched"),
+                h("div",{style:{fontSize:18,fontWeight:700,color:C.warn}},fmtC(row.unmatched_ar,row.entity_id)),
+                h("div",{style:{fontSize:10,color:C.mid}},row.unmatched_count+" invoices · no HubSpot deal")
+              ),
+            ])
+          ),
+
+          // Section 1: Unmatched QBO Invoices
+          h("div",{className:"card",style:{marginBottom:16,overflow:"hidden"}},
+            h("div",{style:{padding:"10px 14px",background:"#FFF8E1",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #E8E7E3"}},
+              h("span",{style:{fontWeight:700,fontSize:12,color:C.warn}},"QBO Invoices — No Matching HubSpot Deal"),
+              h("span",{style:{fontSize:10,color:C.mid}},unmatchedInv.length+" invoices")
+            ),
+            unmatchedInv.length===0
+              ?h("div",{style:{padding:16,textAlign:"center",color:C.mid,fontSize:11}},"No unmatched invoices — all QBO invoices have matching HubSpot deals.")
+              :h("table",{style:{width:"100%",borderCollapse:"collapse"}},
+                h("thead",null,h("tr",null,
+                  ["Entity","Invoice #","Customer","Total","Balance Due","Txn Date","Due Date","Age"].map((col,i)=>
+                    h("th",{key:i,style:{fontSize:10,textAlign:"left",padding:"6px 8px",borderBottom:"1px solid #E8E7E3",color:C.mid,fontWeight:600}},col)
+                  )
+                )),
+                h("tbody",null,
+                  unmatchedInv.map((inv,i)=>{
+                    const ageDays=inv.due_date?Math.floor((new Date()-new Date(inv.due_date+"T00:00:00"))/86400000):null;
+                    const ageColor=!ageDays?C.mid:ageDays>90?"#8B0000":ageDays>60?C.bad:ageDays>30?"#E67E22":ageDays>0?C.warn:C.ok;
+                    return h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
+                      h("td",{style:{padding:"5px 8px"}},h("span",{style:{fontSize:10,fontWeight:700,color:C.ent[inv.entity_id]||C.steel}},inv.entity_id)),
+                      h("td",{style:{padding:"5px 8px",fontWeight:600,fontSize:11}},inv.doc_number||"—"),
+                      h("td",{style:{padding:"5px 8px",fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},inv.customer_name),
+                      h("td",{style:{padding:"5px 8px",color:C.mid,fontSize:11}},fmtC(inv.amount_total,inv.entity_id)),
+                      h("td",{style:{padding:"5px 8px",fontWeight:700,color:C.bad}},fmtC(inv.balance_due,inv.entity_id)),
+                      h("td",{style:{padding:"5px 8px",fontSize:10,color:C.mid}},inv.txn_date?dateFmt(inv.txn_date):"—"),
+                      h("td",{style:{padding:"5px 8px",fontSize:10,color:inv.due_date?ageColor:C.mid}},inv.due_date?dateFmt(inv.due_date):"—"),
+                      h("td",{style:{padding:"5px 8px"}},
+                        ageDays!==null&&ageDays>0
+                          ?h("span",{style:{background:ageColor,color:"#fff",borderRadius:3,padding:"1px 5px",fontSize:10,fontWeight:700}},ageDays+"d")
+                          :ageDays!==null&&ageDays<=0
+                            ?h("span",{style:{color:C.ok,fontSize:10}},"Current")
+                            :h("span",{style:{color:C.mid,fontSize:10}},"—")
+                      )
+                    );
+                  })
+                )
+              )
+          ),
+
+          // Section 2: Matched invoices
+          h("div",{className:"card",style:{marginBottom:16,overflow:"hidden"}},
+            h("div",{style:{padding:"10px 14px",background:"#E2F5EC",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #E8E7E3"}},
+              h("span",{style:{fontWeight:700,fontSize:12,color:C.ok}},"Matched — QBO Invoice ↔ HubSpot Deal"),
+              h("span",{style:{fontSize:10,color:C.mid}},matchedInv.length+" invoices")
+            ),
+            matchedInv.length===0
+              ?h("div",{style:{padding:16,textAlign:"center",color:C.mid,fontSize:11}},"No matched invoices yet. Run a sync to populate.")
+              :h("table",{style:{width:"100%",borderCollapse:"collapse"}},
+                h("thead",null,h("tr",null,
+                  ["Entity","Invoice #","Customer","Balance Due","Linked Deal",""].map((col,i)=>
+                    h("th",{key:i,style:{fontSize:10,textAlign:"left",padding:"6px 8px",borderBottom:"1px solid #E8E7E3",color:C.mid,fontWeight:600}},col)
+                  )
+                )),
+                h("tbody",null,
+                  matchedInv.map((inv,i)=>
+                    h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
+                      h("td",{style:{padding:"5px 8px"}},h("span",{style:{fontSize:10,fontWeight:700,color:C.ent[inv.entity_id]||C.steel}},inv.entity_id)),
+                      h("td",{style:{padding:"5px 8px",fontWeight:600,fontSize:11}},inv.doc_number||"—"),
+                      h("td",{style:{padding:"5px 8px",fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},inv.customer_name),
+                      h("td",{style:{padding:"5px 8px",fontWeight:600,color:C.ok}},fmtC(inv.balance_due,inv.entity_id)),
+                      h("td",{style:{padding:"5px 8px",fontSize:10,color:C.mid}},inv.linked_deal_id||"—"),
+                      h("td",{style:{padding:"5px 8px"}},h("span",{style:{color:C.ok,fontSize:11}},"✓"))
+                    )
+                  )
+                )
+              )
+          ),
+
+          // Section 3: HubSpot deals with invoice numbers not found in QBO
+          h("div",{className:"card",style:{marginBottom:16,overflow:"hidden"}},
+            h("div",{style:{padding:"10px 14px",background:"#FEF3D6",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #E8E7E3"}},
+              h("span",{style:{fontWeight:700,fontSize:12,color:C.warn}},"HubSpot Deals — Invoice # Not Found in QBO"),
+              h("span",{style:{fontSize:10,color:C.mid}},missingDeals.length+" deals")
+            ),
+            h("div",{style:{padding:"6px 14px",fontSize:10,color:C.mid,background:"#FAFAF8",borderBottom:"1px solid #E8E7E3"}},
+              "These deals have QBO-style invoice numbers in HubSpot but those invoices are not found in QuickBooks Online. They may have been voided, deleted, or the invoice number is incorrect."
+            ),
+            missingDeals.length===0
+              ?h("div",{style:{padding:16,textAlign:"center",color:C.mid,fontSize:11}},"All HubSpot deal invoice numbers found in QBO.")
+              :h("table",{style:{width:"100%",borderCollapse:"collapse"}},
+                h("thead",null,h("tr",null,
+                  ["Entity","Deal","Invoice #s","Deal Amount",""].map((col,i)=>
+                    h("th",{key:i,style:{fontSize:10,textAlign:"left",padding:"6px 8px",borderBottom:"1px solid #E8E7E3",color:C.mid,fontWeight:600}},col)
+                  )
+                )),
+                h("tbody",null,
+                  missingDeals.map((deal,i)=>
+                    h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
+                      h("td",{style:{padding:"5px 8px"}},h("span",{style:{fontSize:10,fontWeight:700,color:C.ent[deal.entity_id]||C.steel}},deal.entity_id)),
+                      h("td",{style:{padding:"5px 8px"}},
+                        deal.hubspot_deal_url
+                          ?h("a",{href:deal.hubspot_deal_url,target:"_blank",style:{color:C.steel,textDecoration:"none",borderBottom:"1px dotted #C4C3C1",fontSize:11}},deal.deal_name)
+                          :h("span",{style:{fontSize:11}},deal.deal_name)
+                      ),
+                      h("td",{style:{padding:"5px 8px",fontSize:10,fontFamily:"monospace",color:C.warn}},deal.invoice_numbers),
+                      h("td",{style:{padding:"5px 8px",fontWeight:600,color:C.bad}},fmtC(deal.invoiced_total,deal.entity_id)),
+                      h("td",{style:{padding:"5px 8px"}},
+                        deal.hubspot_deal_url&&h("a",{href:deal.hubspot_deal_url,target:"_blank",style:{fontSize:10,color:C.blue}},"Fix in HubSpot")
+                      )
+                    )
+                  )
+                )
+              )
+          ),
+
+          // Section 4: Open AP Bills from QBO
+          h("div",{className:"card",style:{marginBottom:16,overflow:"hidden"}},
+            h("div",{style:{padding:"10px 14px",background:C.entBg.US,display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #E8E7E3"}},
+              h("span",{style:{fontWeight:700,fontSize:12,color:C.steel}},"QBO Open AP Bills"),
+              h("span",{style:{fontSize:10,color:C.mid}},qboAP.length+" vendors")
+            ),
+            qboAP.length===0
+              ?h("div",{style:{padding:16,textAlign:"center",color:C.mid,fontSize:11}},"No QBO AP bills loaded. Run a sync to populate.")
+              :h("table",{style:{width:"100%",borderCollapse:"collapse"}},
+                h("thead",null,h("tr",null,
+                  ["Entity","Vendor","Amount","Invoice #","Due Date","Age"].map((col,i)=>
+                    h("th",{key:i,style:{fontSize:10,textAlign:"left",padding:"6px 8px",borderBottom:"1px solid #E8E7E3",color:C.mid,fontWeight:600}},col)
+                  )
+                )),
+                h("tbody",null,
+                  qboAP.map((bill,i)=>{
+                    const ageDays=bill.due_date?Math.floor((new Date()-new Date(bill.due_date+"T00:00:00"))/86400000):null;
+                    const ageColor=!ageDays?C.mid:ageDays>90?"#8B0000":ageDays>60?C.bad:ageDays>30?"#E67E22":ageDays>0?C.warn:C.ok;
+                    return h("tr",{key:i,style:{background:i%2?"#FAFAF8":"#fff"}},
+                      h("td",{style:{padding:"5px 8px"}},h("span",{style:{fontSize:10,fontWeight:700,color:C.ent[bill.entity_id]||C.steel}},bill.entity_id)),
+                      h("td",{style:{padding:"5px 8px",fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},bill.vendor_name),
+                      h("td",{style:{padding:"5px 8px",fontWeight:700}},fmtC(bill.amount,bill.entity_id)),
+                      h("td",{style:{padding:"5px 8px",fontSize:10,color:C.mid,fontFamily:"monospace"}},bill.invoice_number||"—"),
+                      h("td",{style:{padding:"5px 8px",fontSize:10,color:C.mid}},bill.due_date?dateFmt(bill.due_date):"—"),
+                      h("td",{style:{padding:"5px 8px"}},
+                        ageDays!==null&&ageDays>0
+                          ?h("span",{style:{background:ageColor,color:"#fff",borderRadius:3,padding:"1px 5px",fontSize:10,fontWeight:700}},ageDays+"d overdue")
+                          :ageDays!==null&&ageDays<=0
+                            ?h("span",{style:{color:C.ok,fontSize:10}},"Current")
+                            :h("span",{style:{color:C.mid,fontSize:10}},"—")
+                      )
+                    );
+                  })
+                )
+              )
+          )
+        );
       })(),
 
       // ═══ ENTITY CASHFLOW ═══
