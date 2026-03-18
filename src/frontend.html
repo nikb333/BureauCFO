@@ -779,40 +779,53 @@ function ARv2Tab({ arData }) {
     totalLocal += r.tranche.amount;
   });
 
-  // ── Sort ──
+  // ── Sort (deal-level: keeps multi-tranche deals together) ──
   var FAR_FUTURE = '9999-12-31';
-  var sortFn = function(a, b) {
+  // Build per-deal sort values using tranche index 0 only
+  var dealSortVal = {};
+  allTranchesRaw.forEach(function(r) {
+    if (r.trancheIdx === 0) {
+      dealSortVal[r.deal.deal_id] = {
+        date: r.tranche.dueDate || FAR_FUTURE,
+        amt: r.tranche.amount || 0,
+        name: r.deal.deal_name || '',
+        install: r.deal.install_date || FAR_FUTURE,
+        age: r.days,
+        promised: r.deal.promised_date || FAR_FUTURE,
+        status: r.deal.install_status || '',
+        owner: r.owner || '',
+        entity: r.deal.entity_id || '',
+        tranche: r.tranche.label || '',
+        terms: r.deal.payment_terms_other || r.deal.payment_terms || '',
+      };
+    }
+  });
+  var sorted = filteredTranches.slice().sort(function(a, b) {
     var m = sortDir === 'asc' ? 1 : -1;
+    var aId = a.deal.deal_id, bId = b.deal.deal_id;
+    // Tranches within the same deal always stay together in tranche order
+    if (aId === bId) return a.trancheIdx - b.trancheIdx;
+    var av = dealSortVal[aId] || {}, bv = dealSortVal[bId] || {};
+    // Sort deals against each other using their first tranche value
     if (sortBy === 'Next Due' || sortBy === 'Due Date') {
-      return m * ((a.tranche.dueDate || FAR_FUTURE).localeCompare(b.tranche.dueDate || FAR_FUTURE));
+      return m * (av.date || FAR_FUTURE).localeCompare(bv.date || FAR_FUTURE);
     }
-    if (sortBy === 'Outstanding') return m * (b.tranche.amount - a.tranche.amount);
-    if (sortBy === 'Deal' || sortBy === 'Deal Name') return m * ((a.deal.deal_name || '').localeCompare(b.deal.deal_name || ''));
-    if (sortBy === 'Install Date') {
-      return m * ((a.deal.install_date || FAR_FUTURE).localeCompare(b.deal.install_date || FAR_FUTURE));
-    }
+    if (sortBy === 'Outstanding') return m * ((bv.amt || 0) - (av.amt || 0));
+    if (sortBy === 'Deal' || sortBy === 'Deal Name') return m * (av.name || '').localeCompare(bv.name || '');
+    if (sortBy === 'Install Date') return m * (av.install || FAR_FUTURE).localeCompare(bv.install || FAR_FUTURE);
     if (sortBy === 'Age') {
-      var dA = a.days === null ? -99999 : a.days;
-      var dB = b.days === null ? -99999 : b.days;
+      var dA = av.age === null ? -99999 : (av.age || 0);
+      var dB = bv.age === null ? -99999 : (bv.age || 0);
       return m * (dB - dA);
     }
-    if (sortBy === 'Promised Date') {
-      return m * ((a.deal.promised_date || FAR_FUTURE).localeCompare(b.deal.promised_date || FAR_FUTURE));
-    }
-    if (sortBy === 'Status') {
-      return m * ((a.deal.install_status || '').localeCompare(b.deal.install_status || ''));
-    }
-    if (sortBy === 'Owner') return m * ((a.owner || '').localeCompare(b.owner || ''));
-    if (sortBy === 'Entity') return m * ((a.deal.entity_id || '').localeCompare(b.deal.entity_id || ''));
-    if (sortBy === 'Tranche') return m * ((a.tranche.label || '').localeCompare(b.tranche.label || ''));
-    if (sortBy === 'Terms') {
-      var tA = a.deal.payment_terms_other || a.deal.payment_terms || '';
-      var tB = b.deal.payment_terms_other || b.deal.payment_terms || '';
-      return m * tA.localeCompare(tB);
-    }
+    if (sortBy === 'Promised Date') return m * (av.promised || FAR_FUTURE).localeCompare(bv.promised || FAR_FUTURE);
+    if (sortBy === 'Status') return m * (av.status || '').localeCompare(bv.status || '');
+    if (sortBy === 'Owner') return m * (av.owner || '').localeCompare(bv.owner || '');
+    if (sortBy === 'Entity') return m * (av.entity || '').localeCompare(bv.entity || '');
+    if (sortBy === 'Tranche') return m * (av.tranche || '').localeCompare(bv.tranche || '');
+    if (sortBy === 'Terms') return m * (av.terms || '').localeCompare(bv.terms || '');
     return 0;
-  };
-  var sorted = filteredTranches.slice().sort(sortFn);
+  });
 
   // ── Group by owner for display ──
   var byOwner = {};
