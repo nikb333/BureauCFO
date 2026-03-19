@@ -6,6 +6,7 @@
 <title>Bureau — CFO Dashboard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -44,6 +45,7 @@ input[type=number]:focus,input[type=text]:focus,select:focus{outline:none;border
 .input-grid input:focus{background:#EDF2FE;border-radius:2px}
 .scenario-line{display:flex;align-items:center;gap:6px;padding:4px 0}
 .scenario-dot{width:10px;height:10px;border-radius:50%}
+tr:hover .due-date-edit-icon{opacity:1 !important}
 </style>
 </head>
 <body>
@@ -1887,6 +1889,63 @@ function ARReportTab({ arData }) {
 
   var _ld = us(arData); var localData = _ld[0]; var setLocalData = _ld[1];
   var _cp = us(false); var copied = _cp[0]; var setCopied = _cp[1];
+  var _hni = us(false); var hideNotInstalled = _hni[0]; var setHideNotInstalled = _hni[1];
+  var _ed = us(null); var editingDueDate = _ed[0]; var setEditingDueDate = _ed[1];
+
+  // Save due date override via API, update local state
+  function saveDueDateOverride(dealId, newDate) {
+    var val = newDate || null;
+    fetch('/api/ar-v2/' + dealId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ due_date_override: val }) })
+      .then(function(r) { return r.json(); })
+      .then(function() {
+        setLocalData(function(prev) {
+          if (!prev || !prev.deals) return prev;
+          return Object.assign({}, prev, { deals: prev.deals.map(function(d) {
+            return d.deal_id === dealId ? Object.assign({}, d, { due_date_override: val }) : d;
+          })});
+        });
+      })
+      .catch(function(e) { console.error('Failed to save due date override', e); });
+    setEditingDueDate(null);
+  }
+
+  // Export AR report to Excel via SheetJS
+  function exportToExcel() {
+    if (typeof XLSX === 'undefined') { alert('SheetJS library not loaded'); return; }
+    var rows = [];
+    ENTITIES.forEach(function(eId) {
+      var entityDeals = byEntity[eId];
+      if (!entityDeals) return;
+      entityDeals.forEach(function(p) {
+        var d = p.deal; var cl = p.classification;
+        rows.push({
+          'Entity': eId,
+          'Deal Name': d.deal_name || '',
+          'Payment Terms': d.payment_terms || '',
+          'AR Balance (Local)': cl.arBalance,
+          'Currency': d.currency || ENT_CURR[eId] || '',
+          'AR Balance (USD)': cl.arUsd,
+          'Ageing Bucket': cl.label,
+          'Days Overdue': cl.daysOverdue,
+          'Install Status': d.install_status || '',
+          'Due Date': cl.dueDate || '',
+          'Due Date Override': d.due_date_override || '',
+          'Close Date': d.close_date || '',
+          'Install Date': d.install_date || '',
+          'Rep': d.owner_name || 'Unassigned',
+          'Suspect': p.suspect.suspect ? 'Yes' : '',
+          'HubSpot Link': d.hubspot_deal_url || ''
+        });
+      });
+    });
+    var ws = XLSX.utils.json_to_sheet(rows);
+    // Auto-size columns
+    ws['!cols'] = Object.keys(rows[0] || {}).map(function(k) { return { wch: Math.max(k.length, 14) }; });
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'AR Ageing');
+    var dateStr = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, 'AR_Ageing_Report_' + dateStr + '.xlsx');
+  }
 
   ue(function() {
     fetch('/api/ar-v2')
@@ -1910,7 +1969,26 @@ function ARReportTab({ arData }) {
   }
 
   // ── Step 3: Compute due date using computeTranches (same hybrid logic) ──
+  // Install statuses that mean the job is fully done — only these trigger true overdue
+  var COMPLETE_STATUSES = ['Fully Complete', 'Install Complete'];
+
+  function isDealInstallComplete(deal) {
+    return COMPLETE_STATUSES.indexOf(deal.install_status) >= 0;
+  }
+
+  // Returns true if the tranche's due date depends on installation
+  function isInstallLinkedTranche(tr) {
+    if (tr.pendingInstall) return true;
+    var lbl = (tr.label || '').toLowerCase();
+    return lbl.indexOf('release') >= 0 || lbl.indexOf('install') >= 0;
+  }
+
   function getDealDueInfo(deal) {
+    // Honour manual override first
+    if (deal.due_date_override) {
+      return { dueDate: deal.due_date_override, label: 'Override', pendingInstall: false, type: 'dated', installLinked: false };
+    }
+
     var trs = computeTranches(deal);
     // Find first non-paid, non-estimate tranche with a due date
     var activeTr = null;
@@ -1918,28 +1996,43 @@ function ARReportTab({ arData }) {
       if (!trs[i].isPaid && !trs[i].isEstimate) { activeTr = trs[i]; break; }
     }
     if (!activeTr && trs.length > 0) activeTr = trs[trs.length - 1];
-    if (!activeTr) return { dueDate: null, label: 'No tranches', type: 'none' };
+    if (!activeTr) return { dueDate: null, label: 'No tranches', type: 'none', installLinked: false };
+
+    var installLinked = isInstallLinkedTranche(activeTr);
     return {
       dueDate: activeTr.dueDate,
       label: activeTr.label || activeTr.pct + '% tranche',
       pendingInstall: activeTr.pendingInstall,
+      installLinked: installLinked,
       type: activeTr.pendingInstall ? 'pending_install' : activeTr.dueDate ? 'dated' : 'no_date'
     };
   }
 
-  // ── Step 4: Classify into ageing buckets ──
+  // ── Step 4: Classify into ageing buckets (install-status-aware) ──
   function classifyDeal(deal) {
     var arBalance = getARBalance(deal);
     var dueInfo = getDealDueInfo(deal);
     var fx = FX_AR[deal.entity_id] || 1;
+    var installStatus = deal.install_status || '';
 
     if (arBalance <= 0) {
-      return { bucket: 'paid_or_current', daysOverdue: 0, label: 'Paid / Current', arBalance: 0, arUsd: 0, dueDate: dueInfo.dueDate, dueLabel: dueInfo.label };
+      return { bucket: 'paid_or_current', daysOverdue: 0, label: 'Paid / Current', arBalance: 0, arUsd: 0, dueDate: dueInfo.dueDate, dueLabel: dueInfo.label, notYetInstalled: false };
+    }
+
+    // ── Install-status guard ──
+    // If the balance is tied to installation (50/50 release, Net N from install, etc.)
+    // and the deal has NOT reached Fully Complete / Install Complete, treat as current.
+    // Pre-delivery statuses: On Hold, Pending Sales Order, Not Scheduled, Install Scheduled, Install Prep, etc.
+    var notYetInstalled = false;
+    if (dueInfo.installLinked && !isDealInstallComplete(deal)) {
+      var statusLabel = installStatus || 'Not Scheduled';
+      notYetInstalled = true;
+      return { bucket: 'current_no_date', daysOverdue: 0, label: 'Current \u2014 ' + statusLabel, arBalance: arBalance, arUsd: Math.round(arBalance * fx), dueDate: dueInfo.dueDate, dueLabel: dueInfo.label, notYetInstalled: true };
     }
 
     if (!dueInfo.dueDate) {
       var lbl = dueInfo.pendingInstall ? 'Current \u2014 Pending Install' : 'Current \u2014 No Date';
-      return { bucket: 'current_no_date', daysOverdue: 0, label: lbl, arBalance: arBalance, arUsd: Math.round(arBalance * fx), dueDate: null, dueLabel: dueInfo.label };
+      return { bucket: 'current_no_date', daysOverdue: 0, label: lbl, arBalance: arBalance, arUsd: Math.round(arBalance * fx), dueDate: null, dueLabel: dueInfo.label, notYetInstalled: false };
     }
 
     var today = new Date(); today.setHours(0, 0, 0, 0);
@@ -1953,7 +2046,7 @@ function ARReportTab({ arData }) {
     else if (days <= 90) { bucket = '61_90'; bucketLabel = days + 'd overdue'; }
     else { bucket = '90_plus'; bucketLabel = days + 'd overdue'; }
 
-    return { bucket: bucket, daysOverdue: days, label: bucketLabel, arBalance: arBalance, arUsd: Math.round(arBalance * fx), dueDate: dueInfo.dueDate, dueLabel: dueInfo.label };
+    return { bucket: bucket, daysOverdue: days, label: bucketLabel, arBalance: arBalance, arUsd: Math.round(arBalance * fx), dueDate: dueInfo.dueDate, dueLabel: dueInfo.label, notYetInstalled: false };
   }
 
   // ── Step 5: Suspect invoice detection ──
@@ -2025,12 +2118,16 @@ function ARReportTab({ arData }) {
   var suspectCount = processed.filter(function(p) { return p.suspect.suspect; }).length;
   var totalARUsd = withBalance.reduce(function(s, p) { return s + p.classification.arUsd; }, 0);
 
-  // ── Group by entity ──
+  // ── Group by entity (apply filter toggle) ──
+  var filteredDeals = hideNotInstalled
+    ? withBalance.filter(function(p) { return !p.classification.notYetInstalled; })
+    : withBalance;
   var byEntity = {};
   ENTITIES.forEach(function(e) {
-    byEntity[e] = withBalance.filter(function(p) { return p.deal.entity_id === e; })
+    byEntity[e] = filteredDeals.filter(function(p) { return p.deal.entity_id === e; })
       .sort(function(a, b) { return b.classification.daysOverdue - a.classification.daysOverdue; });
   });
+  var notInstalledCount = withBalance.filter(function(p) { return p.classification.notYetInstalled; }).length;
 
   // ── Format helpers ──
   var fmtM = function(n) { return '$' + Math.round(n / 1000).toLocaleString() + 'K'; };
@@ -2087,10 +2184,20 @@ function ARReportTab({ arData }) {
           h('div', { style: { fontSize: 11, color: C.mid } }, today),
           h('div', { style: { fontSize: 10, color: C.warm, marginTop: 4 } }, 'Excludes deals without synced invoices. Balances are tax-inclusive per accounting system invoices.')
         ),
-        h('button', {
-          onClick: copyToClipboard,
-          style: { padding: '6px 14px', background: copied ? C.ok : C.steel, color: '#fff', border: 'none', borderRadius: 4, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }
-        }, copied ? '\u2713 Copied!' : 'Copy for Slack')
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+          h('button', {
+            onClick: function() { setHideNotInstalled(!hideNotInstalled); },
+            style: { padding: '6px 14px', background: hideNotInstalled ? '#E8960A' : '#fff', color: hideNotInstalled ? '#fff' : C.mid, border: '1.5px solid ' + (hideNotInstalled ? '#E8960A' : '#E0DFDB'), borderRadius: 4, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }
+          }, hideNotInstalled ? 'Not Installed Hidden (' + notInstalledCount + ')' : 'Hide Not Installed'),
+          h('button', {
+            onClick: exportToExcel,
+            style: { padding: '6px 14px', background: '#fff', color: C.steel, border: '1.5px solid #E0DFDB', borderRadius: 4, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }
+          }, '\u2b07 Export Excel'),
+          h('button', {
+            onClick: copyToClipboard,
+            style: { padding: '6px 14px', background: copied ? C.ok : C.steel, color: '#fff', border: 'none', borderRadius: 4, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }
+          }, copied ? '\u2713 Copied!' : 'Copy for Slack')
+        )
       )
     ),
 
@@ -2240,11 +2347,34 @@ function ARReportTab({ arData }) {
                         })()
                       : h('span', { style: { fontSize: 9, color: C.warm } }, d.deal_stage || '\u2014')
                   ),
-                  // Due Date
-                  h('td', { style: { fontSize: 10, whiteSpace: 'nowrap' } },
-                    cl.dueDate
-                      ? h('span', { style: { color: AGE_COLORS[cl.bucket] || C.mid, fontWeight: 500 } }, dateFmt(cl.dueDate))
-                      : h('span', { style: { color: C.warm, fontSize: 9 } }, '\u2014')
+                  // Due Date (inline editable)
+                  h('td', { style: { fontSize: 10, whiteSpace: 'nowrap', position: 'relative' } },
+                    editingDueDate === d.deal_id
+                      ? h('span', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                          h('input', {
+                            type: 'date',
+                            defaultValue: d.due_date_override || cl.dueDate || '',
+                            autoFocus: true,
+                            style: { fontSize: 10, padding: '2px 4px', border: '1px solid ' + C.blue, borderRadius: 3, fontFamily: 'inherit', width: 120 },
+                            onKeyDown: function(ev) { if (ev.key === 'Escape') setEditingDueDate(null); if (ev.key === 'Enter') saveDueDateOverride(d.deal_id, ev.target.value); },
+                            onBlur: function(ev) { saveDueDateOverride(d.deal_id, ev.target.value); }
+                          }),
+                          h('button', {
+                            onClick: function() { saveDueDateOverride(d.deal_id, null); },
+                            title: 'Clear override',
+                            style: { fontSize: 9, padding: '1px 4px', background: 'none', border: '1px solid #E0DFDB', borderRadius: 3, cursor: 'pointer', color: C.bad }
+                          }, '\u2715')
+                        )
+                      : h('span', {
+                          style: { display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' },
+                          onClick: function() { setEditingDueDate(d.deal_id); }
+                        },
+                          cl.dueDate
+                            ? h('span', { style: { color: AGE_COLORS[cl.bucket] || C.mid, fontWeight: 500 } }, dateFmt(cl.dueDate))
+                            : h('span', { style: { color: C.warm, fontSize: 9 } }, '\u2014'),
+                          d.due_date_override && h('span', { title: 'Manual override', style: { fontSize: 8, color: C.blue, marginLeft: 2 } }, '\u270e'),
+                          h('span', { className: 'due-date-edit-icon', style: { fontSize: 9, color: C.warm, opacity: 0, transition: 'opacity 0.15s' } }, '\u270e')
+                        )
                   ),
                   // Rep
                   h('td', { style: { fontSize: 10, color: C.mid, whiteSpace: 'nowrap' } }, (d.owner_name || 'Unassigned').split(' ')[0]),
