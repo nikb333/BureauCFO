@@ -1997,6 +1997,18 @@ function ARReportTab({ arData }) {
     return lbl.indexOf('deposit') >= 0 || lbl.indexOf('conf') >= 0;
   }
 
+  // Check if tranche is a generic Net N (not already install-linked or confirmation)
+  function isGenericNetTranche(tr) {
+    var lbl = (tr.label || '').toLowerCase();
+    return lbl.match(/^net\s*\d+$/) !== null;
+  }
+
+  // Extract the N from "Net 30", "Net 60", etc.
+  function extractNetDays(tr) {
+    var m = (tr.label || '').match(/net\s*(\d+)/i);
+    return m ? parseInt(m[1]) : 30;
+  }
+
   // Get the earliest open invoice due date for a deal (for confirmation/deposit leniency)
   function getEarliestInvoiceDueDate(dealId) {
     var invoices = (localData && localData.invoicesByDeal && localData.invoicesByDeal[dealId]) || [];
@@ -2023,11 +2035,31 @@ function ARReportTab({ arData }) {
     if (!activeTr && trs.length > 0) activeTr = trs[trs.length - 1];
     if (!activeTr) return { dueDate: null, label: 'No tranches', type: 'none', installLinked: false, isConfirmation: false };
 
-    var installLinked = isInstallLinkedTranche(activeTr);
     var isConf = isConfirmationTranche(activeTr);
+    var isGenericNet = isGenericNetTranche(activeTr);
+
+    // For AR Report: default Net N terms to install date (most clients require install completion)
+    // This overrides computeTranches which may have used close date
+    var installLinked = isInstallLinkedTranche(activeTr) || isGenericNet;
+    var dueDate = activeTr.dueDate;
+    var label = activeTr.label || activeTr.pct + '% tranche';
+    var pendingInstall = activeTr.pendingInstall;
+
+    if (isGenericNet && deal.install_date) {
+      // Recompute due date from install date
+      var netDays = extractNetDays(activeTr);
+      var instD = new Date(deal.install_date + 'T00:00:00');
+      var newDue = new Date(instD.getTime() + netDays * 86400000);
+      dueDate = newDue.toISOString().slice(0, 10);
+      label = 'Net ' + netDays + ' install';
+    } else if (isGenericNet && !deal.install_date) {
+      // No install date yet — pending install
+      dueDate = null;
+      pendingInstall = true;
+      label = label + ' (awaiting install)';
+    }
 
     // For deposit/confirmation tranches: prefer actual invoice due date if available
-    var dueDate = activeTr.dueDate;
     if (isConf) {
       var invDue = getEarliestInvoiceDueDate(deal.deal_id);
       if (invDue) dueDate = invDue;
@@ -2035,8 +2067,8 @@ function ARReportTab({ arData }) {
 
     return {
       dueDate: dueDate,
-      label: activeTr.label || activeTr.pct + '% tranche',
-      pendingInstall: activeTr.pendingInstall,
+      label: label,
+      pendingInstall: pendingInstall,
       installLinked: installLinked,
       isConfirmation: isConf,
       type: activeTr.pendingInstall ? 'pending_install' : dueDate ? 'dated' : 'no_date'
