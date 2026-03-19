@@ -1126,6 +1126,8 @@ export default {
             matched_deal_id INTEGER,
             updated_at TEXT DEFAULT (datetime('now'))
           )`,
+          "ALTER TABLE hs_ar_deals ADD COLUMN due_date_override TEXT",
+          "ALTER TABLE hs_ar_deals ADD COLUMN ar_notes TEXT",
         ];
         const results=[];
         for(const sql of migrations){
@@ -1477,6 +1479,28 @@ export default {
           syft_last_sync: syftSyncRes?.value || null,
           auuk_coverage_note: 'AU and UK invoice details require Xero API (not yet connected). AU/UK AR is visible via Syft reconciliation tab.',
         });
+      }
+
+      // ── AR v2 deal update (due date override, notes) ──
+      if (path.startsWith('/api/ar-v2/') && method === 'PUT') {
+        const dealId = path.split('/').pop();
+        const body = await request.json();
+        const sets = []; const vals = [];
+        if (body.due_date_override !== undefined) { sets.push('due_date_override=?'); vals.push(body.due_date_override || null); }
+        if (body.ar_notes !== undefined) { sets.push('ar_notes=?'); vals.push(body.ar_notes || null); }
+        if (sets.length === 0) return json({ error: 'No fields to update' }, 400);
+        vals.push(dealId);
+        try {
+          await env.DB.prepare('UPDATE hs_ar_deals SET ' + sets.join(',') + ' WHERE deal_id=?').bind(...vals).run();
+        } catch (e) {
+          // Column may not exist yet — auto-add
+          if (e.message && e.message.includes('no such column')) {
+            try { await env.DB.prepare("ALTER TABLE hs_ar_deals ADD COLUMN due_date_override TEXT").run(); } catch (_) {}
+            try { await env.DB.prepare("ALTER TABLE hs_ar_deals ADD COLUMN ar_notes TEXT").run(); } catch (_) {}
+            await env.DB.prepare('UPDATE hs_ar_deals SET ' + sets.join(',') + ' WHERE deal_id=?').bind(...vals).run();
+          } else throw e;
+        }
+        return json({ success: true });
       }
 
       // ── QBO Reconciliation endpoint ──
